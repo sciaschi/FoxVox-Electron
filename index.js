@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, session } = require("electron");
+const { updateElectronApp } = require('update-electron-app');
 const path = require("path");
 
 const isDev = !app.isPackaged;
@@ -106,6 +107,7 @@ ipcMain.handle("get-desktop-sources", async () => {
 });
 
 app.whenReady().then(() => {
+    updateElectronApp();
     createWindow();
 
     app.on("activate", () => {
