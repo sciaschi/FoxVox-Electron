@@ -4,7 +4,7 @@ const path = require("path");
 
 const isDev = !app.isPackaged;
 
-// Force single instance to prevent Squirrel lock conflicts
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
     app.quit();
@@ -41,6 +41,11 @@ if (!gotLock) {
         const win = BrowserWindow.getFocusedWindow();
         if (win?.webContents.navigationHistory.canGoForward())
             win.webContents.navigationHistory.goForward();
+    });
+
+    ipcMain.on("clipboard-write", (_event, text) => {
+        const { clipboard } = require("electron");
+        clipboard.writeText(text);
     });
 
     function createWindow() {
