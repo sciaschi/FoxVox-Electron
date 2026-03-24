@@ -1,6 +1,6 @@
 {
   "name": "foxvox",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "FoxVox Chat Application",
   "homepage": "https://github.com/sciaschi/FoxVox-Electron#readme",
   "bugs": {
@@ -84,6 +84,7 @@
     "dir-compare": "^4.2.0",
     "eastasianwidth": "^0.2.0",
     "electron-installer-common": "^0.10.4",
+    "electron-log": "^5.4.3",
     "electron-squirrel-startup": "^1.0.1",
     "electron-to-chromium": "^1.5.321",
     "emoji-regex": "^9.2.2",

@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, session } = require("electron");
-const { updateElectronApp } = require('update-electron-app');
+const { updateElectronApp, UpdateSourceType} = require('update-electron-app');
 const path = require("path");
 
 const isDev = !app.isPackaged;
@@ -65,7 +65,6 @@ if (!gotLock) {
 
         const ses = session.fromPartition("persist:main");
 
-        // CORS fix — inject missing headers for api.foxvox.app
         ses.webRequest.onHeadersReceived(
             { urls: ["https://api.foxvox.app/*"] },
             (details, callback) => {
@@ -126,8 +125,16 @@ if (!gotLock) {
 
     app.whenReady().then(() => {
         if (app.isPackaged) {
-            updateElectronApp();
+            updateElectronApp({
+                updateSource: {
+                    type: UpdateSourceType.ElectronPublicUpdateService,
+                    repo: 'sciaschi/FoxVox-Electron'
+                },
+                updateInterval: '1 hour',
+                logger: require('electron-log')
+            });
         }
+
         createWindow();
 
         app.on("activate", () => {
