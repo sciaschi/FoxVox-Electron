@@ -1,6 +1,6 @@
 {
   "name": "foxvox",
-  "version": "1.0.12",
+  "version": "1.0.14",
   "description": "FoxVox Chat Application",
   "homepage": "https://github.com/sciaschi/FoxVox-Electron#readme",
   "bugs": {
@@ -8,7 +8,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/sciaschi/FoxVox-Electron.git"
+    "url": "git+https://github.com/sciaschi/FoxVox-Electron.git"
   },
   "license": "ISC",
   "author": "Sean Ciaschi",
