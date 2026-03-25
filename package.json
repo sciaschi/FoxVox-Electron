@@ -1,6 +1,6 @@
 {
   "name": "foxvox",
-  "version": "1.0.17",
+  "version": "1.0.19",
   "description": "FoxVox Chat Application",
   "homepage": "https://github.com/sciaschi/FoxVox-Electron#readme",
   "bugs": {
@@ -17,6 +17,7 @@
   "scripts": {
     "dev": "electron .",
     "package": "electron-forge package",
+    "publish": "electron-forge publish",
     "make": "electron-forge make",
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "electron-forge start"
