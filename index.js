@@ -99,10 +99,6 @@ if (!gotLock) {
 
         win.loadFile(path.join(__dirname, "dist/index.html"));
 
-        // if (isDev) {
-        //     win.webContents.openDevTools();
-        // }
-
         win.on("maximize",   () => win.webContents.send("maximize-change", true));
         win.on("unmaximize", () => win.webContents.send("maximize-change", false));
     }
