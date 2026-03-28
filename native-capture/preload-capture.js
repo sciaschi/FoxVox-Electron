@@ -13,6 +13,7 @@ function registerNativeCapture(targetWindow) {
         headerInfo = addon.FrameHeader;
 
         console.log("[NativeCapture] Addon loaded");
+        console.log("[NativeCapture] Build tag:", addon.buildTag ?? "unknown");
     } catch (err) {
         console.warn("[NativeCapture] Addon not available:", err.message);
         console.warn("[NativeCapture] Run: cd native-capture && npm run build");
@@ -55,11 +56,17 @@ function registerNativeCapture(targetWindow) {
                 return false;
 
             try {
-                return !!addon.startCapture({
-                    fps: Number(opts?.fps ?? 60),
+                const forwarded = {
+                    fps: Number(opts?.fps ?? 30),
                     adapterIndex: Number(opts?.adapterIndex ?? 0),
                     outputIndex: Number(opts?.outputIndex ?? 0),
-                });
+                    targetWidth: Number(opts?.targetWidth ?? 1920),
+                    targetHeight: Number(opts?.targetHeight ?? 1080),
+                };
+
+                console.log("[NativeCapture] startCapture forwarded opts:", forwarded);
+
+                return !!addon.startCapture(forwarded);
             } catch (err) {
                 console.error("[NativeCapture] Start failed:", err);
                 return false;
@@ -79,18 +86,22 @@ function registerNativeCapture(targetWindow) {
 
         getInfo: () => {
             if (!addon)
-                return { width: 0, height: 0, running: false };
+                return { width: 0, height: 0, outputWidth: 0, outputHeight: 0, running: false };
 
             try {
                 const info = addon.getInfo();
                 return {
                     width: Number(info?.width ?? 0),
                     height: Number(info?.height ?? 0),
+                    outputWidth: Number(info?.outputWidth ?? 0),
+                    outputHeight: Number(info?.outputHeight ?? 0),
                     running: !!info?.running,
+                    bufferSize: Number(info?.bufferSize ?? 0),
+                    slotBytes: Number(info?.slotBytes ?? 0),
                 };
             } catch (err) {
                 console.error("[NativeCapture] getInfo failed:", err);
-                return { width: 0, height: 0, running: false };
+                return { width: 0, height: 0, outputWidth: 0, outputHeight: 0, running: false };
             }
         },
     };

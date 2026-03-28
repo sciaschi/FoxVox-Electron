@@ -5,8 +5,11 @@ let mainWindow = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 1400,
-        height: 900,
+        width: 1200,
+        height: 800,
+        frame: false,
+        titleBarStyle: "hidden",
+        backgroundColor: "#141414",
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
             contextIsolation: false,
@@ -19,14 +22,23 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+    // Apply COOP/COEP to the actual app document too, not just API responses.
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         callback({
             responseHeaders: {
                 ...details.responseHeaders,
                 "Cross-Origin-Opener-Policy": ["same-origin"],
-                "Cross-Origin-Embedder-Policy": ["require-corp"],
+                "Cross-Origin-Embedder-Policy": ["credentialless"],
+                "Access-Control-Allow-Origin": ["*"],
+                "Access-Control-Allow-Methods": ["GET, POST, PUT, DELETE, OPTIONS"],
+                "Access-Control-Allow-Headers": ["Content-Type, Authorization"],
             },
         });
+    });
+
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+        const allowed = ["media", "mediaKeySystem", "fullscreen", "openExternal"];
+        callback(allowed.includes(permission));
     });
 
     ipcMain.handle("get-desktop-sources", async () => {

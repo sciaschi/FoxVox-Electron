@@ -1,42 +1,27 @@
 // native-capture/src/capture.cpp
 //
-// DXGI Desktop Duplication → double-buffered SharedArrayBuffer
+// DXGI Desktop Duplication -> double-buffered SharedArrayBuffer
+// with native-side downscale to a target resolution.
 //
-// Layout:
-//   Global header
-//   Slot 0 pixel plane
-//   Slot 1 pixel plane
-//
-// Writer alternates between slot 0 and slot 1.
-// Renderer reads whichever slot is the latest completed frame.
+// Optimized for two common cases:
+//   1) target == desktop size: fast row-copy, no software rescale
+//   2) target < desktop size: software nearest-neighbor downscale before JS ever sees the frame
 
 #include <napi.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
-#include <vector>
-#include <mutex>
 #include <atomic>
 #include <thread>
 #include <chrono>
 #include <cstring>
+#include <string>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
 using Microsoft::WRL::ComPtr;
 
-// Header layout:
-// [width:4]
-// [height:4]
-// [writeSlot:4]
-// [reserved:4]
-// [slot0_timestamp:8]
-// [slot0_frameIndex:4]
-// [slot0_ready:4]
-// [slot1_timestamp:8]
-// [slot1_frameIndex:4]
-// [slot1_ready:4]
 struct FrameHeader {
     static constexpr size_t OFFSET_WIDTH            = 0;
     static constexpr size_t OFFSET_HEIGHT           = 4;
@@ -54,19 +39,21 @@ struct FrameHeader {
     static constexpr size_t HEADER_SIZE             = 48;
 };
 
-static ComPtr<ID3D11Device>            g_device;
-static ComPtr<ID3D11DeviceContext>     g_context;
-static ComPtr<IDXGIOutputDuplication>  g_duplication;
-static ComPtr<ID3D11Texture2D>         g_stagingTex;
+static ComPtr<ID3D11Device>           g_device;
+static ComPtr<ID3D11DeviceContext>    g_context;
+static ComPtr<IDXGIOutputDuplication> g_duplication;
+static ComPtr<ID3D11Texture2D>        g_stagingTex;
 
 static std::atomic<bool> g_running{false};
 static std::thread       g_captureThread;
 
-static uint32_t g_outputWidth  = 0;
-static uint32_t g_outputHeight = 0;
+static uint32_t g_outputWidth   = 0;
+static uint32_t g_outputHeight  = 0;
+static uint32_t g_targetWidth   = 0;
+static uint32_t g_targetHeight  = 0;
 
-static uint8_t* g_sharedPtr    = nullptr;
-static size_t   g_sharedSize   = 0;
+static uint8_t* g_sharedPtr     = nullptr;
+static size_t   g_sharedSize    = 0;
 
 static size_t GetSlotBytes() {
     if (g_sharedSize <= FrameHeader::HEADER_SIZE)
@@ -76,8 +63,8 @@ static size_t GetSlotBytes() {
 }
 
 static uint8_t* GetSlotBase(uint32_t slot) {
-    size_t slotBytes = GetSlotBytes();
-    if (!g_sharedPtr || slotBytes == 0 || slot > 1)
+    const size_t slotBytes = GetSlotBytes();
+    if (!g_sharedPtr || slot > 1 || slotBytes == 0)
         return nullptr;
 
     return g_sharedPtr + FrameHeader::HEADER_SIZE + (slot * slotBytes);
@@ -107,14 +94,17 @@ bool InitDXGI(int adapterIndex, int outputIndex) {
     if (FAILED(output.As(&output1)))
         return false;
 
-    HRESULT hr = output1->DuplicateOutput(g_device.Get(), &g_duplication);
-    if (FAILED(hr))
+    if (FAILED(output1->DuplicateOutput(g_device.Get(), &g_duplication)))
         return false;
 
     DXGI_OUTPUT_DESC desc;
     output->GetDesc(&desc);
+
     g_outputWidth  = desc.DesktopCoordinates.right  - desc.DesktopCoordinates.left;
     g_outputHeight = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+
+    if (g_targetWidth == 0)  g_targetWidth = g_outputWidth;
+    if (g_targetHeight == 0) g_targetHeight = g_outputHeight;
 
     D3D11_TEXTURE2D_DESC texDesc = {};
     texDesc.Width            = g_outputWidth;
@@ -132,26 +122,58 @@ bool InitDXGI(int adapterIndex, int outputIndex) {
     return true;
 }
 
-void WriteFrameToShared(const uint8_t* src, uint32_t rowPitch, uint64_t timestamp, uint32_t frameIndex) {
+static void WriteScaledFrameToShared(
+    const uint8_t* src,
+    uint32_t srcRowPitch,
+    uint64_t timestamp,
+    uint32_t frameIndex
+) {
     if (!g_sharedPtr || !g_sharedSize)
         return;
 
+    const uint32_t dstW = g_targetWidth;
+    const uint32_t dstH = g_targetHeight;
+
     const size_t slotBytes = GetSlotBytes();
-    const size_t pixelBytes = static_cast<size_t>(g_outputWidth) * static_cast<size_t>(g_outputHeight) * 4;
+    const size_t pixelBytes = static_cast<size_t>(dstW) * static_cast<size_t>(dstH) * 4;
 
     if (slotBytes == 0 || pixelBytes > slotBytes)
         return;
 
     const uint32_t slot = frameIndex & 1u;
-    uint8_t* pixelDst = GetSlotBase(slot);
-    if (!pixelDst)
+    uint8_t* dst = GetSlotBase(slot);
+    if (!dst)
         return;
 
-    const uint32_t rowBytes = g_outputWidth * 4;
-    for (uint32_t y = 0; y < g_outputHeight; y++) {
-        memcpy(pixelDst + static_cast<size_t>(y) * rowBytes,
-               src + static_cast<size_t>(y) * rowPitch,
-               rowBytes);
+    // Fast path: no resize needed, just row-copy into the selected slot.
+    if (dstW == g_outputWidth && dstH == g_outputHeight) {
+        const uint32_t rowBytes = dstW * 4;
+        for (uint32_t y = 0; y < dstH; ++y) {
+            memcpy(dst + static_cast<size_t>(y) * rowBytes,
+                   src + static_cast<size_t>(y) * srcRowPitch,
+                   rowBytes);
+        }
+    } else {
+        // Resize path: nearest-neighbor downscale before JS sees the frame.
+        const float scaleX = static_cast<float>(g_outputWidth)  / static_cast<float>(dstW);
+        const float scaleY = static_cast<float>(g_outputHeight) / static_cast<float>(dstH);
+
+        for (uint32_t y = 0; y < dstH; ++y) {
+            const uint32_t srcY = static_cast<uint32_t>(y * scaleY);
+            const uint8_t* srcRow = src + static_cast<size_t>(srcY) * srcRowPitch;
+            uint8_t* dstRow = dst + static_cast<size_t>(y) * dstW * 4;
+
+            for (uint32_t x = 0; x < dstW; ++x) {
+                const uint32_t srcX = static_cast<uint32_t>(x * scaleX);
+                const uint8_t* srcPx = srcRow + static_cast<size_t>(srcX) * 4;
+                uint8_t* dstPx = dstRow + static_cast<size_t>(x) * 4;
+
+                dstPx[0] = srcPx[0];
+                dstPx[1] = srcPx[1];
+                dstPx[2] = srcPx[2];
+                dstPx[3] = srcPx[3];
+            }
+        }
     }
 
     uint8_t* base = g_sharedPtr;
@@ -163,8 +185,8 @@ void WriteFrameToShared(const uint8_t* src, uint32_t rowPitch, uint64_t timestam
         memcpy(base + offset, &val, 8);
     };
 
-    writeU32(FrameHeader::OFFSET_WIDTH, g_outputWidth);
-    writeU32(FrameHeader::OFFSET_HEIGHT, g_outputHeight);
+    writeU32(FrameHeader::OFFSET_WIDTH,  dstW);
+    writeU32(FrameHeader::OFFSET_HEIGHT, dstH);
 
     if (slot == 0) {
         writeU64(FrameHeader::OFFSET_SLOT0_TIMESTAMP, timestamp);
@@ -177,7 +199,6 @@ void WriteFrameToShared(const uint8_t* src, uint32_t rowPitch, uint64_t timestam
     }
 
     std::atomic_thread_fence(std::memory_order_release);
-
     writeU32(FrameHeader::OFFSET_WRITE_SLOT, slot);
 }
 
@@ -190,7 +211,6 @@ void CaptureLoop(int targetFps) {
 
         ComPtr<IDXGIResource> desktopResource;
         DXGI_OUTDUPL_FRAME_INFO frameInfo;
-
         HRESULT hr = g_duplication->AcquireNextFrame(16, &frameInfo, &desktopResource);
 
         if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
@@ -219,7 +239,7 @@ void CaptureLoop(int targetFps) {
                 std::chrono::steady_clock::now().time_since_epoch()
             ).count();
 
-            WriteFrameToShared(
+            WriteScaledFrameToShared(
                 static_cast<const uint8_t*>(mapped.pData),
                 mapped.RowPitch,
                 timestamp,
@@ -271,7 +291,9 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
 
     int adapterIndex = 0;
     int outputIndex = 0;
-    int fps = 60;
+    int fps = 30;
+    g_targetWidth = 0;
+    g_targetHeight = 0;
 
     if (info.Length() > 0 && info[0].IsObject()) {
         auto opts = info[0].As<Napi::Object>();
@@ -281,6 +303,10 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
             outputIndex = opts.Get("outputIndex").As<Napi::Number>().Int32Value();
         if (opts.Has("fps"))
             fps = opts.Get("fps").As<Napi::Number>().Int32Value();
+        if (opts.Has("targetWidth"))
+            g_targetWidth = opts.Get("targetWidth").As<Napi::Number>().Uint32Value();
+        if (opts.Has("targetHeight"))
+            g_targetHeight = opts.Get("targetHeight").As<Napi::Number>().Uint32Value();
     }
 
     if (g_running.load()) {
@@ -288,9 +314,8 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
         return Napi::Boolean::New(env, false);
     }
 
-    if (g_captureThread.joinable()) {
+    if (g_captureThread.joinable())
         g_captureThread.join();
-    }
 
     g_duplication.Reset();
     g_stagingTex.Reset();
@@ -309,23 +334,20 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
 
     const size_t slotBytes = GetSlotBytes();
     const size_t requiredBytes =
-        static_cast<size_t>(g_outputWidth) *
-        static_cast<size_t>(g_outputHeight) * 4;
+        static_cast<size_t>(g_targetWidth) *
+        static_cast<size_t>(g_targetHeight) * 4;
 
     if (slotBytes < requiredBytes) {
         std::string msg =
-            "Shared buffer slot too small for current desktop resolution. "
-            "slotBytes=" + std::to_string(slotBytes) +
+            "Shared buffer slot too small for target resolution. slotBytes=" + std::to_string(slotBytes) +
             ", requiredBytes=" + std::to_string(requiredBytes) +
-            ", output=" + std::to_string(g_outputWidth) + "x" + std::to_string(g_outputHeight);
+            ", target=" + std::to_string(g_targetWidth) + "x" + std::to_string(g_targetHeight);
 
         Napi::Error::New(env, msg).ThrowAsJavaScriptException();
-
         g_duplication.Reset();
         g_stagingTex.Reset();
         g_context.Reset();
         g_device.Reset();
-
         return Napi::Boolean::New(env, false);
     }
 
@@ -335,7 +357,6 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
         g_captureThread = std::thread(CaptureLoop, fps);
     } catch (const std::exception& ex) {
         g_running.store(false);
-
         g_duplication.Reset();
         g_stagingTex.Reset();
         g_context.Reset();
@@ -362,6 +383,8 @@ Napi::Value StopCapture(const Napi::CallbackInfo& info) {
 
     g_outputWidth = 0;
     g_outputHeight = 0;
+    g_targetWidth = 0;
+    g_targetHeight = 0;
 
     return info.Env().Undefined();
 }
@@ -370,8 +393,10 @@ Napi::Value GetInfo(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     auto result = Napi::Object::New(env);
 
-    result.Set("width", Napi::Number::New(env, g_outputWidth));
-    result.Set("height", Napi::Number::New(env, g_outputHeight));
+    result.Set("width", Napi::Number::New(env, g_targetWidth));
+    result.Set("height", Napi::Number::New(env, g_targetHeight));
+    result.Set("outputWidth", Napi::Number::New(env, g_outputWidth));
+    result.Set("outputHeight", Napi::Number::New(env, g_outputHeight));
     result.Set("running", Napi::Boolean::New(env, g_running.load()));
     result.Set("bufferSize", Napi::Number::New(env, static_cast<double>(g_sharedSize)));
     result.Set("slotBytes", Napi::Number::New(env, static_cast<double>(GetSlotBytes())));
@@ -401,6 +426,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("stopCapture",        Napi::Function::New(env, StopCapture));
     exports.Set("getInfo",            Napi::Function::New(env, GetInfo));
     exports.Set("requiredBufferSize", Napi::Function::New(env, RequiredBufferSize));
+    exports.Set("buildTag",           Napi::String::New(env, "cpu-optimized-1080p-v1"));
 
     auto header = Napi::Object::New(env);
     header.Set("OFFSET_WIDTH",           Napi::Number::New(env, FrameHeader::OFFSET_WIDTH));
