@@ -1,0 +1,14 @@
+{
+  "name": "native-capture",
+  "version": "2.0.0",
+  "description": "DXGI Desktop Duplication → SharedArrayBuffer zero-copy capture",
+  "main": "index.js",
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "clean": "node-gyp clean"
+  },
+  "dependencies": {
+    "node-addon-api": "^7.0.0",
+    "node-gyp": "^10.0.0"
+  }
+}

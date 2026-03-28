@@ -1,150 +1,87 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session } = require("electron");
-const { updateElectronApp, UpdateSourceType} = require('update-electron-app');
 const path = require("path");
+const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, session } = require("electron");
 
-const isDev = !app.isPackaged;
+let mainWindow = null;
 
-
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-    app.quit();
-} else {
-    app.on("second-instance", () => {
-        const win = BrowserWindow.getAllWindows()[0];
-        if (win) {
-            if (win.isMinimized()) win.restore();
-            win.focus();
-        }
+function createWindow() {
+    mainWindow = new BrowserWindow({
+        width: 1400,
+        height: 900,
+        webPreferences: {
+            preload: path.join(__dirname, "preload.js"),
+            contextIsolation: false,
+            nodeIntegration: false,
+            sandbox: false,
+        },
     });
 
-    ipcMain.on("window-minimize", () => {
-        BrowserWindow.getFocusedWindow()?.minimize();
-    });
+    mainWindow.loadFile(path.join(__dirname, "dist/index.html"));
+}
 
-    ipcMain.on("window-maximize", () => {
-        const win = BrowserWindow.getFocusedWindow();
-        if (win?.isMaximized()) win.unmaximize();
-        else win?.maximize();
-    });
-
-    ipcMain.on("window-close", () => {
-        BrowserWindow.getFocusedWindow()?.destroy();
-    });
-
-    ipcMain.on("navigate-back", () => {
-        const win = BrowserWindow.getFocusedWindow();
-        if (win?.webContents.navigationHistory.canGoBack())
-            win.webContents.navigationHistory.goBack();
-    });
-
-    ipcMain.on("navigate-forward", () => {
-        const win = BrowserWindow.getFocusedWindow();
-        if (win?.webContents.navigationHistory.canGoForward())
-            win.webContents.navigationHistory.goForward();
-    });
-
-    ipcMain.on("clipboard-write", (_event, text) => {
-        const { clipboard } = require("electron");
-        clipboard.writeText(text);
-    });
-
-    function createWindow() {
-        const win = new BrowserWindow({
-            width: 1200,
-            height: 800,
-            frame: false,
-            titleBarStyle: "hidden",
-            backgroundColor: "#141414",
-            webPreferences: {
-                contextIsolation: true,
-                nodeIntegration: false,
-                partition: "persist:main",
-                preload: path.join(__dirname, "preload.js"),
+app.whenReady().then(() => {
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        callback({
+            responseHeaders: {
+                ...details.responseHeaders,
+                "Cross-Origin-Opener-Policy": ["same-origin"],
+                "Cross-Origin-Embedder-Policy": ["require-corp"],
             },
         });
-
-        const ses = session.fromPartition("persist:main");
-
-        ses.webRequest.onHeadersReceived(
-            { urls: ["https://api.foxvox.app/*"] },
-            (details, callback) => {
-                callback({
-                    responseHeaders: {
-                        ...details.responseHeaders,
-                        "Access-Control-Allow-Origin":      ["*"],
-                        "Access-Control-Allow-Methods":     ["GET, POST, PUT, DELETE, OPTIONS"],
-                        "Access-Control-Allow-Headers":     ["Content-Type, Authorization"],
-                        "Access-Control-Allow-Credentials": ["true"],
-                    },
-                });
-            }
-        );
-
-        ses.setPermissionRequestHandler(
-            (webContents, permission, callback) => {
-                const allowed = ["media", "mediaKeySystem", "fullscreen", "openExternal"];
-                callback(allowed.includes(permission));
-            }
-        );
-
-        ses.setDisplayMediaRequestHandler(
-            (request, callback) => {
-                desktopCapturer.getSources({ types: ["screen", "window"] }).then((sources) => {
-                    callback({ video: sources[0], audio: "loopback" });
-                });
-            }
-        );
-
-        win.setMinimumSize(800, 400);
-
-        win.loadFile(path.join(__dirname, "dist/index.html"));
-
-        win.on("maximize",   () => win.webContents.send("maximize-change", true));
-        win.on("unmaximize", () => win.webContents.send("maximize-change", false));
-    }
+    });
 
     ipcMain.handle("get-desktop-sources", async () => {
         const sources = await desktopCapturer.getSources({
-            types: ["screen", "window"],
+            types: ["window", "screen"],
             thumbnailSize: { width: 320, height: 180 },
             fetchWindowIcons: true,
         });
 
-        return sources.map((s) => ({
-            id:         s.id,
-            name:       s.name,
-            thumbnail:  s.thumbnail.toDataURL(),
-            appIcon:    s.appIcon ? s.appIcon.toDataURL() : null,
-            display_id: s.display_id,
+        return sources.map((source) => ({
+            id: source.id,
+            name: source.name,
+            thumbnail: source.thumbnail?.toDataURL?.() ?? "",
+            appIcon: source.appIcon?.toDataURL?.() ?? "",
         }));
     });
 
-    app.whenReady().then(() => {
-        if (app.isPackaged) {
-            updateElectronApp({
-                updateSource: {
-                    type: UpdateSourceType.ElectronPublicUpdateService,
-                    repo: 'sciaschi/FoxVox-Electron'
-                },
-                updateInterval: '1 hour',
-                logger: require('electron-log')
-            });
-        }
+    ipcMain.on("window-minimize", () => mainWindow?.minimize());
 
+    ipcMain.on("window-maximize", () => {
+        if (!mainWindow) return;
+
+        if (mainWindow.isMaximized())
+            mainWindow.unmaximize();
+        else
+            mainWindow.maximize();
+
+        mainWindow.webContents.send("maximize-change", mainWindow.isMaximized());
+    });
+
+    ipcMain.on("window-close", () => mainWindow?.close());
+
+    ipcMain.on("navigate-back", () => {
+        if (mainWindow?.webContents.canGoBack())
+            mainWindow.webContents.goBack();
+    });
+
+    ipcMain.on("navigate-forward", () => {
+        if (mainWindow?.webContents.canGoForward())
+            mainWindow.webContents.goForward();
+    });
+
+    ipcMain.on("clipboard-write", (_event, text) => {
+        clipboard.writeText(text ?? "");
+    });
+
+    createWindow();
+});
+
+app.on("window-all-closed", () => {
+    if (process.platform !== "darwin")
+        app.quit();
+});
+
+app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0)
         createWindow();
-
-        app.on("activate", () => {
-            if (BrowserWindow.getAllWindows().length === 0)
-                createWindow();
-        });
-    });
-
-    app.on("before-quit", () => {
-        setTimeout(() => app.exit(0), 2000);
-    });
-
-    app.on("window-all-closed", () => {
-        if (process.platform !== "darwin")
-            app.quit();
-    });
-}
+});
