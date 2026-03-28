@@ -23,21 +23,27 @@ function register(ipcMain) {
 
     // Renderer calls this once to get the SharedArrayBuffer + header layout
     ipcMain.handle("native-capture:init", async (_event, opts) => {
-        const result = addon.initBuffer(opts.width, opts.height);
+        try {
+            const width = opts.width || 1920;
+            const height = opts.height || 1080;
+            const size = Number(addon.requiredBufferSize(width, height));
+            
+            sharedBuffer = new SharedArrayBuffer(size);
+            const view = new Uint8Array(sharedBuffer);
+            addon.attachBuffer(view);
 
-        return {
-            ok: true,
-            width: result.width,
-            height: result.height,
-            headerSize: result.headerSize,
-            offsets: {
-                OFFSET_DIRTY: result.offsets.OFFSET_DIRTY,
-                OFFSET_FRAME_IDX: result.offsets.OFFSET_FRAME_IDX,
-                OFFSET_WIDTH: result.offsets.OFFSET_WIDTH,
-                OFFSET_HEIGHT: result.offsets.OFFSET_HEIGHT,
-                OFFSET_TIMESTAMP: result.offsets.OFFSET_TIMESTAMP,
-            },
-        };
+            return {
+                ok: true,
+                buffer: sharedBuffer,
+                width,
+                height,
+                headerSize: headerInfo.HEADER_SIZE,
+                offsets: { ...headerInfo },
+            };
+        } catch (err) {
+            console.error("[NativeCapture] init failed:", err);
+            return { ok: false, error: err.message };
+        }
     });
 
     ipcMain.handle("native-capture:start", (_event, opts = {}) => {

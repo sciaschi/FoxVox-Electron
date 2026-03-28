@@ -98,6 +98,9 @@ function registerNativeCapture(targetWindow) {
                     running: !!info?.running,
                     bufferSize: Number(info?.bufferSize ?? 0),
                     slotBytes: Number(info?.slotBytes ?? 0),
+                    lastHr: Number(info?.lastHr ?? 0),
+                    lastAcquireMs: Number(info?.lastAcquireMs ?? 0),
+                    lastMapMs: Number(info?.lastMapMs ?? 0),
                 };
             } catch (err) {
                 console.error("[NativeCapture] getInfo failed:", err);

@@ -16,9 +16,13 @@
 #include <chrono>
 #include <cstring>
 #include <string>
+#include <vector>
+#include <mmsystem.h>
+#include <timeapi.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "winmm.lib")
 
 using Microsoft::WRL::ComPtr;
 
@@ -42,10 +46,14 @@ struct FrameHeader {
 static ComPtr<ID3D11Device>           g_device;
 static ComPtr<ID3D11DeviceContext>    g_context;
 static ComPtr<IDXGIOutputDuplication> g_duplication;
-static ComPtr<ID3D11Texture2D>        g_stagingTex;
+static ComPtr<ID3D11Texture2D>        g_stagingTex[3]; // Triple buffered staging
+static uint32_t                       g_stagingIndex = 0;
 
 static std::atomic<bool> g_running{false};
 static std::thread       g_captureThread;
+static std::atomic<HRESULT> g_lastHr{S_OK};
+static std::atomic<uint32_t> g_lastMapMs{0};
+static std::atomic<uint32_t> g_lastAcquireMs{0};
 
 static uint32_t g_outputWidth   = 0;
 static uint32_t g_outputHeight  = 0;
@@ -54,6 +62,8 @@ static uint32_t g_targetHeight  = 0;
 
 static uint8_t* g_sharedPtr     = nullptr;
 static size_t   g_sharedSize    = 0;
+static std::vector<uint32_t> g_xOffsets;
+static std::vector<uint32_t> g_yOffsets;
 
 static size_t GetSlotBytes() {
     if (g_sharedSize <= FrameHeader::HEADER_SIZE)
@@ -116,9 +126,14 @@ bool InitDXGI(int adapterIndex, int outputIndex) {
     texDesc.Usage            = D3D11_USAGE_STAGING;
     texDesc.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
 
-    if (FAILED(g_device->CreateTexture2D(&texDesc, nullptr, &g_stagingTex)))
+    if (FAILED(g_device->CreateTexture2D(&texDesc, nullptr, &g_stagingTex[0])))
+        return false;
+    if (FAILED(g_device->CreateTexture2D(&texDesc, nullptr, &g_stagingTex[1])))
+        return false;
+    if (FAILED(g_device->CreateTexture2D(&texDesc, nullptr, &g_stagingTex[2])))
         return false;
 
+    g_stagingIndex = 0;
     return true;
 }
 
@@ -148,114 +163,168 @@ static void WriteScaledFrameToShared(
     // Fast path: no resize needed, just row-copy into the selected slot.
     if (dstW == g_outputWidth && dstH == g_outputHeight) {
         const uint32_t rowBytes = dstW * 4;
-        for (uint32_t y = 0; y < dstH; ++y) {
-            memcpy(dst + static_cast<size_t>(y) * rowBytes,
-                   src + static_cast<size_t>(y) * srcRowPitch,
-                   rowBytes);
+        if (srcRowPitch == rowBytes) {
+            memcpy(dst, src, rowBytes * dstH);
+        } else {
+            for (uint32_t y = 0; y < dstH; ++y) {
+                memcpy(dst + static_cast<size_t>(y) * rowBytes,
+                       src + static_cast<size_t>(y) * srcRowPitch,
+                       rowBytes);
+            }
         }
     } else {
         // Resize path: nearest-neighbor downscale before JS sees the frame.
-        const float scaleX = static_cast<float>(g_outputWidth)  / static_cast<float>(dstW);
-        const float scaleY = static_cast<float>(g_outputHeight) / static_cast<float>(dstH);
+        if (g_xOffsets.size() != dstW) {
+            g_xOffsets.resize(dstW);
+            const float scaleX = static_cast<float>(g_outputWidth) / static_cast<float>(dstW);
+            for (uint32_t x = 0; x < dstW; ++x) {
+                g_xOffsets[x] = static_cast<uint32_t>(x * scaleX) * 4;
+            }
+        }
+        if (g_yOffsets.size() != dstH) {
+            g_yOffsets.resize(dstH);
+            const float scaleY = static_cast<float>(g_outputHeight) / static_cast<float>(dstH);
+            for (uint32_t y = 0; y < dstH; ++y) {
+                g_yOffsets[y] = static_cast<uint32_t>(y * scaleY);
+            }
+        }
 
         for (uint32_t y = 0; y < dstH; ++y) {
-            const uint32_t srcY = static_cast<uint32_t>(y * scaleY);
-            const uint8_t* srcRow = src + static_cast<size_t>(srcY) * srcRowPitch;
-            uint8_t* dstRow = dst + static_cast<size_t>(y) * dstW * 4;
+            const uint8_t* srcRow = src + static_cast<size_t>(g_yOffsets[y]) * srcRowPitch;
+            uint32_t* dstRow = reinterpret_cast<uint32_t*>(dst + static_cast<size_t>(y) * dstW * 4);
 
             for (uint32_t x = 0; x < dstW; ++x) {
-                const uint32_t srcX = static_cast<uint32_t>(x * scaleX);
-                const uint8_t* srcPx = srcRow + static_cast<size_t>(srcX) * 4;
-                uint8_t* dstPx = dstRow + static_cast<size_t>(x) * 4;
-
-                dstPx[0] = srcPx[0];
-                dstPx[1] = srcPx[1];
-                dstPx[2] = srcPx[2];
-                dstPx[3] = srcPx[3];
+                dstRow[x] = *reinterpret_cast<const uint32_t*>(srcRow + g_xOffsets[x]);
             }
         }
     }
 
     uint8_t* base = g_sharedPtr;
-
-    auto writeU32 = [base](size_t offset, uint32_t val) {
-        memcpy(base + offset, &val, 4);
-    };
-    auto writeU64 = [base](size_t offset, uint64_t val) {
-        memcpy(base + offset, &val, 8);
-    };
-
-    writeU32(FrameHeader::OFFSET_WIDTH,  dstW);
-    writeU32(FrameHeader::OFFSET_HEIGHT, dstH);
+    *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_WIDTH)  = dstW;
+    *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_HEIGHT) = dstH;
 
     if (slot == 0) {
-        writeU64(FrameHeader::OFFSET_SLOT0_TIMESTAMP, timestamp);
-        writeU32(FrameHeader::OFFSET_SLOT0_FRAME_IDX, frameIndex);
-        writeU32(FrameHeader::OFFSET_SLOT0_READY, 1);
+        *reinterpret_cast<uint64_t*>(base + FrameHeader::OFFSET_SLOT0_TIMESTAMP) = timestamp;
+        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT0_FRAME_IDX) = frameIndex;
+        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT0_READY)     = 1;
     } else {
-        writeU64(FrameHeader::OFFSET_SLOT1_TIMESTAMP, timestamp);
-        writeU32(FrameHeader::OFFSET_SLOT1_FRAME_IDX, frameIndex);
-        writeU32(FrameHeader::OFFSET_SLOT1_READY, 1);
+        *reinterpret_cast<uint64_t*>(base + FrameHeader::OFFSET_SLOT1_TIMESTAMP) = timestamp;
+        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT1_FRAME_IDX) = frameIndex;
+        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT1_READY)     = 1;
     }
 
     std::atomic_thread_fence(std::memory_order_release);
-    writeU32(FrameHeader::OFFSET_WRITE_SLOT, slot);
+    *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_WRITE_SLOT) = slot;
 }
 
 void CaptureLoop(int targetFps) {
-    auto frameDuration = std::chrono::microseconds(1000000 / targetFps);
-    uint32_t frameIndex = 0;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    timeBeginPeriod(1);
+    
+    const auto frameDuration = std::chrono::microseconds(1000000 / targetFps);
+    uint32_t nextFrameIndex = 0;
+    uint32_t captureIdx = 0; // Next slot to write TO
+    uint32_t processIdx = 0; // Next slot to read FROM
+    uint32_t readyCount = 0; // How many are waiting for Map
+
+    uint64_t stagingTimestamp[3] = {0, 0, 0};
+    uint32_t stagingFrameIndex[3] = {0, 0, 0};
+
+    auto nextFrameStart = std::chrono::steady_clock::now();
 
     while (g_running.load()) {
-        auto frameStart = std::chrono::steady_clock::now();
-
-        ComPtr<IDXGIResource> desktopResource;
-        DXGI_OUTDUPL_FRAME_INFO frameInfo;
-        HRESULT hr = g_duplication->AcquireNextFrame(16, &frameInfo, &desktopResource);
-
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-            auto elapsed = std::chrono::steady_clock::now() - frameStart;
-            auto remaining = frameDuration - elapsed;
-            if (remaining.count() > 0)
-                std::this_thread::sleep_for(remaining);
-            continue;
+        auto now = std::chrono::steady_clock::now();
+        
+        if (now > nextFrameStart + frameDuration * 5) {
+            nextFrameStart = now;
         }
 
-        if (FAILED(hr)) {
-            g_running.store(false);
-            break;
-        }
-
-        ComPtr<ID3D11Texture2D> desktopTex;
-        desktopResource.As(&desktopTex);
-
-        g_context->CopyResource(g_stagingTex.Get(), desktopTex.Get());
-
+    // 1. Process any waiting frames from PREVIOUS iterations.
+    // This ensures the GPU has had time (at least one frame duration) to finish CopyResource.
+    if (readyCount > 0) {
+        auto startMap = std::chrono::steady_clock::now();
+        ID3D11Texture2D* processStaging = g_stagingTex[processIdx].Get();
         D3D11_MAPPED_SUBRESOURCE mapped;
-        hr = g_context->Map(g_stagingTex.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-
-        if (SUCCEEDED(hr)) {
-            uint64_t timestamp = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()
-            ).count();
+        
+        // Blocking Map: since we are 1+ frame behind, this should be near-instant 
+        // unless the GPU is severely overwhelmed.
+        HRESULT mapHr = g_context->Map(processStaging, 0, D3D11_MAP_READ, 0, &mapped);
+        if (SUCCEEDED(mapHr)) {
+            const uint32_t slot = stagingFrameIndex[processIdx] & 1u;
+            // Clear the ready flag for the slot we are about to overwrite in shared memory
+            uint8_t* base = g_sharedPtr;
+            if (base) {
+                if (slot == 0) *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT0_READY) = 0;
+                else           *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT1_READY) = 0;
+            }
 
             WriteScaledFrameToShared(
                 static_cast<const uint8_t*>(mapped.pData),
                 mapped.RowPitch,
-                timestamp,
-                frameIndex++
+                stagingTimestamp[processIdx],
+                stagingFrameIndex[processIdx]
             );
+            g_context->Unmap(processStaging, 0);
+        }
+        
+        auto endMap = std::chrono::steady_clock::now();
+        g_lastMapMs.store(static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(endMap - startMap).count()));
 
-            g_context->Unmap(g_stagingTex.Get(), 0);
+        processIdx = (processIdx + 1) % 3;
+        readyCount--;
+    }
+
+        // 2. Wait and Acquire next frame
+        int32_t waitMs = 0;
+        now = std::chrono::steady_clock::now();
+        if (nextFrameStart > now) {
+            waitMs = static_cast<int32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(nextFrameStart - now).count());
+        }
+        if (waitMs < 1) waitMs = 1;
+
+        ComPtr<IDXGIResource> desktopResource;
+        DXGI_OUTDUPL_FRAME_INFO frameInfo;
+        
+        auto startAcquire = std::chrono::steady_clock::now();
+        HRESULT hr = g_duplication->AcquireNextFrame(waitMs, &frameInfo, &desktopResource);
+        auto endAcquire = std::chrono::steady_clock::now();
+        g_lastAcquireMs.store(static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(endAcquire - startAcquire).count()));
+        g_lastHr.store(hr);
+
+        if (SUCCEEDED(hr)) {
+            if (frameInfo.AccumulatedFrames > 0) {
+                ComPtr<ID3D11Texture2D> desktopTex;
+                if (SUCCEEDED(desktopResource.As(&desktopTex))) {
+                    ID3D11Texture2D* nextStaging = g_stagingTex[captureIdx].Get();
+                    g_context->CopyResource(nextStaging, desktopTex.Get());
+                    
+                    stagingTimestamp[captureIdx] = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()
+                    ).count();
+                    stagingFrameIndex[captureIdx] = nextFrameIndex++;
+                    
+                    if (readyCount < 3) {
+                        readyCount++;
+                    } else {
+                        processIdx = (processIdx + 1) % 3;
+                    }
+                    captureIdx = (captureIdx + 1) % 3;
+                }
+            }
+            g_duplication->ReleaseFrame();
+        } else if (hr != DXGI_ERROR_WAIT_TIMEOUT) {
+            g_running.store(false);
+            break;
         }
 
-        g_duplication->ReleaseFrame();
-
-        auto elapsed = std::chrono::steady_clock::now() - frameStart;
-        auto remaining = frameDuration - elapsed;
-        if (remaining.count() > 0)
-            std::this_thread::sleep_for(remaining);
+        // 3. Cadence sleep
+        now = std::chrono::steady_clock::now();
+        if (now < nextFrameStart) {
+            std::this_thread::sleep_until(nextFrameStart);
+        }
+        nextFrameStart += frameDuration;
     }
+    timeEndPeriod(1);
 }
 
 Napi::Value AttachBuffer(const Napi::CallbackInfo& info) {
@@ -318,7 +387,8 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
         g_captureThread.join();
 
     g_duplication.Reset();
-    g_stagingTex.Reset();
+    g_stagingTex[0].Reset();
+    g_stagingTex[1].Reset();
     g_context.Reset();
     g_device.Reset();
 
@@ -345,7 +415,8 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
 
         Napi::Error::New(env, msg).ThrowAsJavaScriptException();
         g_duplication.Reset();
-        g_stagingTex.Reset();
+        g_stagingTex[0].Reset();
+        g_stagingTex[1].Reset();
         g_context.Reset();
         g_device.Reset();
         return Napi::Boolean::New(env, false);
@@ -358,7 +429,8 @@ Napi::Value StartCapture(const Napi::CallbackInfo& info) {
     } catch (const std::exception& ex) {
         g_running.store(false);
         g_duplication.Reset();
-        g_stagingTex.Reset();
+        g_stagingTex[0].Reset();
+        g_stagingTex[1].Reset();
         g_context.Reset();
         g_device.Reset();
 
@@ -377,7 +449,8 @@ Napi::Value StopCapture(const Napi::CallbackInfo& info) {
         g_captureThread.join();
 
     g_duplication.Reset();
-    g_stagingTex.Reset();
+    g_stagingTex[0].Reset();
+    g_stagingTex[1].Reset();
     g_context.Reset();
     g_device.Reset();
 
@@ -385,6 +458,8 @@ Napi::Value StopCapture(const Napi::CallbackInfo& info) {
     g_outputHeight = 0;
     g_targetWidth = 0;
     g_targetHeight = 0;
+    g_xOffsets.clear();
+    g_yOffsets.clear();
 
     return info.Env().Undefined();
 }
@@ -400,6 +475,9 @@ Napi::Value GetInfo(const Napi::CallbackInfo& info) {
     result.Set("running", Napi::Boolean::New(env, g_running.load()));
     result.Set("bufferSize", Napi::Number::New(env, static_cast<double>(g_sharedSize)));
     result.Set("slotBytes", Napi::Number::New(env, static_cast<double>(GetSlotBytes())));
+    result.Set("lastHr", Napi::Number::New(env, static_cast<double>(g_lastHr.load())));
+    result.Set("lastAcquireMs", Napi::Number::New(env, static_cast<double>(g_lastAcquireMs.load())));
+    result.Set("lastMapMs", Napi::Number::New(env, static_cast<double>(g_lastMapMs.load())));
 
     return result;
 }
@@ -426,7 +504,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("stopCapture",        Napi::Function::New(env, StopCapture));
     exports.Set("getInfo",            Napi::Function::New(env, GetInfo));
     exports.Set("requiredBufferSize", Napi::Function::New(env, RequiredBufferSize));
-    exports.Set("buildTag",           Napi::String::New(env, "cpu-optimized-1080p-v1"));
+    exports.Set("buildTag",           Napi::String::New(env, "optimized-v8-atomic-ready"));
 
     auto header = Napi::Object::New(env);
     header.Set("OFFSET_WIDTH",           Napi::Number::New(env, FrameHeader::OFFSET_WIDTH));
