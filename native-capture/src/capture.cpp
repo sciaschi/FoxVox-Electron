@@ -1,12 +1,3 @@
-// native-capture/src/capture.cpp
-//
-// DXGI Desktop Duplication -> double-buffered SharedArrayBuffer
-// with native-side downscale to a target resolution.
-//
-// Optimized for two common cases:
-//   1) target == desktop size: fast row-copy, no software rescale
-//   2) target < desktop size: software nearest-neighbor downscale before JS ever sees the frame
-
 #include <napi.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -15,512 +6,267 @@
 #include <thread>
 #include <chrono>
 #include <cstring>
-#include <string>
 #include <vector>
 #include <mmsystem.h>
-#include <timeapi.h>
+#include <windows.h>
+
+#include <winrt/base.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Capture.h>
+#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#include <windows.graphics.capture.interop.h>
+#include <windows.graphics.directx.direct3d11.interop.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "windowsapp.lib")
 
 using Microsoft::WRL::ComPtr;
+namespace wgc = winrt::Windows::Graphics::Capture;
+namespace wgd11 = winrt::Windows::Graphics::DirectX::Direct3D11;
 
-struct FrameHeader {
-    static constexpr size_t OFFSET_WIDTH            = 0;
-    static constexpr size_t OFFSET_HEIGHT           = 4;
-    static constexpr size_t OFFSET_WRITE_SLOT       = 8;
-    static constexpr size_t OFFSET_RESERVED         = 12;
-
-    static constexpr size_t OFFSET_SLOT0_TIMESTAMP  = 16;
-    static constexpr size_t OFFSET_SLOT0_FRAME_IDX  = 24;
-    static constexpr size_t OFFSET_SLOT0_READY      = 28;
-
-    static constexpr size_t OFFSET_SLOT1_TIMESTAMP  = 32;
-    static constexpr size_t OFFSET_SLOT1_FRAME_IDX  = 40;
-    static constexpr size_t OFFSET_SLOT1_READY      = 44;
-
-    static constexpr size_t HEADER_SIZE             = 48;
+struct __declspec(uuid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")) IDirect3DDxgiInterfaceAccess : ::IUnknown {
+    virtual HRESULT __stdcall GetInterface(GUID const& id, void** object) = 0;
 };
+
+#pragma pack(push, 1)
+struct FrameHeader {
+    uint32_t width, height, writeSlot, reserved;
+    uint64_t slot0Timestamp; uint32_t slot0FrameIdx, slot0Ready;
+    uint64_t slot1Timestamp; uint32_t slot1FrameIdx, slot1Ready;
+    static constexpr size_t HEADER_SIZE = 48;
+};
+#pragma pack(pop)
 
 static ComPtr<ID3D11Device>           g_device;
 static ComPtr<ID3D11DeviceContext>    g_context;
 static ComPtr<IDXGIOutputDuplication> g_duplication;
-static ComPtr<ID3D11Texture2D>        g_stagingTex[3]; // Triple buffered staging
-static uint32_t                       g_stagingIndex = 0;
+static ComPtr<ID3D11Texture2D>        g_stagingTex[3];
+static std::atomic<bool>              g_running{ false };
+static std::thread                    g_captureThread;
+static std::atomic<uint32_t>          g_targetWidth{ 0 }, g_targetHeight{ 0 };
+static uint32_t                       g_stagingWidth = 0, g_stagingHeight = 0;
+static uint8_t*                       g_sharedPtr  = nullptr;
+static size_t                         g_sharedSize = 0;
+static std::vector<uint32_t>          g_xOffsets, g_yOffsets;
+static std::vector<uint8_t>           g_rowBuffer;
+static wgc::Direct3D11CaptureFramePool g_wgcFramePool{ nullptr };
+static wgc::GraphicsCaptureSession     g_wgcSession{ nullptr };
+static wgd11::IDirect3DDevice          g_winrtDevice{ nullptr };
 
-static std::atomic<bool> g_running{false};
-static std::thread       g_captureThread;
-static std::atomic<HRESULT> g_lastHr{S_OK};
-static std::atomic<uint32_t> g_lastMapMs{0};
-static std::atomic<uint32_t> g_lastAcquireMs{0};
-
-static uint32_t g_outputWidth   = 0;
-static uint32_t g_outputHeight  = 0;
-static uint32_t g_targetWidth   = 0;
-static uint32_t g_targetHeight  = 0;
-
-static uint8_t* g_sharedPtr     = nullptr;
-static size_t   g_sharedSize    = 0;
-static std::vector<uint32_t> g_xOffsets;
-static std::vector<uint32_t> g_yOffsets;
-
-static size_t GetSlotBytes() {
-    if (g_sharedSize <= FrameHeader::HEADER_SIZE)
-        return 0;
-
-    return (g_sharedSize - FrameHeader::HEADER_SIZE) / 2;
+template <typename T>
+static winrt::com_ptr<T> GetDXGIInterfaceFromObject(winrt::Windows::Foundation::IInspectable const& object) {
+    auto access = object.as<IDirect3DDxgiInterfaceAccess>();
+    winrt::com_ptr<T> result;
+    winrt::check_hresult(access->GetInterface(winrt::guid_of<T>(), result.put_void()));
+    return result;
 }
 
-static uint8_t* GetSlotBase(uint32_t slot) {
-    const size_t slotBytes = GetSlotBytes();
-    if (!g_sharedPtr || slot > 1 || slotBytes == 0)
-        return nullptr;
-
-    return g_sharedPtr + FrameHeader::HEADER_SIZE + (slot * slotBytes);
+static void ResetCaptureState() {
+    g_running.store(false);
+    if (g_captureThread.joinable()) g_captureThread.join();
+    if (g_wgcSession) { try { g_wgcSession.Close(); } catch(...) {} g_wgcSession = nullptr; }
+    if (g_wgcFramePool) { try { g_wgcFramePool.Close(); } catch(...) {} g_wgcFramePool = nullptr; }
+    g_duplication.Reset();
+    for (auto& tex : g_stagingTex) tex.Reset();
+    g_winrtDevice = nullptr;
+    g_context.Reset();
+    g_device.Reset();
 }
 
-bool InitDXGI(int adapterIndex, int outputIndex) {
-    ComPtr<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
-        return false;
-
-    ComPtr<IDXGIAdapter1> adapter;
-    if (FAILED(factory->EnumAdapters1(adapterIndex, &adapter)))
-        return false;
-
-    D3D_FEATURE_LEVEL featureLevel;
-    if (FAILED(D3D11CreateDevice(
-        adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0,
-        nullptr, 0, D3D11_SDK_VERSION,
-        &g_device, &featureLevel, &g_context)))
-        return false;
-
-    ComPtr<IDXGIOutput> output;
-    if (FAILED(adapter->EnumOutputs(outputIndex, &output)))
-        return false;
-
-    ComPtr<IDXGIOutput1> output1;
-    if (FAILED(output.As(&output1)))
-        return false;
-
-    if (FAILED(output1->DuplicateOutput(g_device.Get(), &g_duplication)))
-        return false;
-
-    DXGI_OUTPUT_DESC desc;
-    output->GetDesc(&desc);
-
-    g_outputWidth  = desc.DesktopCoordinates.right  - desc.DesktopCoordinates.left;
-    g_outputHeight = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
-
-    if (g_targetWidth == 0)  g_targetWidth = g_outputWidth;
-    if (g_targetHeight == 0) g_targetHeight = g_outputHeight;
-
-    D3D11_TEXTURE2D_DESC texDesc = {};
-    texDesc.Width            = g_outputWidth;
-    texDesc.Height           = g_outputHeight;
-    texDesc.MipLevels        = 1;
-    texDesc.ArraySize        = 1;
-    texDesc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Usage            = D3D11_USAGE_STAGING;
-    texDesc.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
-
-    if (FAILED(g_device->CreateTexture2D(&texDesc, nullptr, &g_stagingTex[0])))
-        return false;
-    if (FAILED(g_device->CreateTexture2D(&texDesc, nullptr, &g_stagingTex[1])))
-        return false;
-    if (FAILED(g_device->CreateTexture2D(&texDesc, nullptr, &g_stagingTex[2])))
-        return false;
-
-    g_stagingIndex = 0;
+static bool CreateStagingTextures(uint32_t w, uint32_t h) {
+    if (!g_device || w == 0 || h == 0) return false;
+    g_stagingWidth = w; g_stagingHeight = h;
+    g_xOffsets.clear(); g_yOffsets.clear(); // Clear offsets to trigger recalculation
+    D3D11_TEXTURE2D_DESC d = {w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1,0}, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0};
+    for (int i = 0; i < 3; ++i) {
+        g_stagingTex[i].Reset();
+        if (FAILED(g_device->CreateTexture2D(&d, nullptr, &g_stagingTex[i]))) return false;
+    }
     return true;
 }
 
-static void WriteScaledFrameToShared(
-    const uint8_t* src,
-    uint32_t srcRowPitch,
-    uint64_t timestamp,
-    uint32_t frameIndex
-) {
-    if (!g_sharedPtr || !g_sharedSize)
-        return;
+static void WriteToShared(const uint8_t* src, uint32_t srcPitch, uint32_t fIdx) {
+    if (!g_sharedPtr || !g_sharedSize) return;
+    const uint32_t tw = g_targetWidth.load();
+    const uint32_t th = g_targetHeight.load();
+    const uint32_t slot = fIdx & 1u;
+    const size_t sBytes = (g_sharedSize - 48) / 2;
+    uint8_t* dst = g_sharedPtr + 48 + (slot * sBytes);
 
-    const uint32_t dstW = g_targetWidth;
-    const uint32_t dstH = g_targetHeight;
-
-    const size_t slotBytes = GetSlotBytes();
-    const size_t pixelBytes = static_cast<size_t>(dstW) * static_cast<size_t>(dstH) * 4;
-
-    if (slotBytes == 0 || pixelBytes > slotBytes)
-        return;
-
-    const uint32_t slot = frameIndex & 1u;
-    uint8_t* dst = GetSlotBase(slot);
-    if (!dst)
-        return;
-
-    // Fast path: no resize needed, just row-copy into the selected slot.
-    if (dstW == g_outputWidth && dstH == g_outputHeight) {
-        const uint32_t rowBytes = dstW * 4;
-        if (srcRowPitch == rowBytes) {
-            memcpy(dst, src, rowBytes * dstH);
-        } else {
-            for (uint32_t y = 0; y < dstH; ++y) {
-                memcpy(dst + static_cast<size_t>(y) * rowBytes,
-                       src + static_cast<size_t>(y) * srcRowPitch,
-                       rowBytes);
-            }
-        }
+    if (tw == g_stagingWidth && th == g_stagingHeight) {
+        const uint32_t rb = tw * 4;
+        for (uint32_t y = 0; y < th; ++y) memcpy(dst + (size_t)y * rb, src + (size_t)y * srcPitch, rb);
     } else {
-        // Resize path: nearest-neighbor downscale before JS sees the frame.
-        if (g_xOffsets.size() != dstW) {
-            g_xOffsets.resize(dstW);
-            const float scaleX = static_cast<float>(g_outputWidth) / static_cast<float>(dstW);
-            for (uint32_t x = 0; x < dstW; ++x) {
-                g_xOffsets[x] = static_cast<uint32_t>(x * scaleX) * 4;
-            }
+        if (g_xOffsets.size() != tw) {
+            g_xOffsets.resize(tw); float sx = (float)g_stagingWidth / tw;
+            for (uint32_t x = 0; x < tw; ++x) g_xOffsets[x] = (uint32_t)(x * sx) * 4;
         }
-        if (g_yOffsets.size() != dstH) {
-            g_yOffsets.resize(dstH);
-            const float scaleY = static_cast<float>(g_outputHeight) / static_cast<float>(dstH);
-            for (uint32_t y = 0; y < dstH; ++y) {
-                g_yOffsets[y] = static_cast<uint32_t>(y * scaleY);
-            }
+        if (g_yOffsets.size() != th) {
+            g_yOffsets.resize(th); float sy = (float)g_stagingHeight / th;
+            for (uint32_t y = 0; y < th; ++y) g_yOffsets[y] = (uint32_t)(y * sy);
         }
-
-        for (uint32_t y = 0; y < dstH; ++y) {
-            const uint8_t* srcRow = src + static_cast<size_t>(g_yOffsets[y]) * srcRowPitch;
-            uint32_t* dstRow = reinterpret_cast<uint32_t*>(dst + static_cast<size_t>(y) * dstW * 4);
-
-            for (uint32_t x = 0; x < dstW; ++x) {
-                dstRow[x] = *reinterpret_cast<const uint32_t*>(srcRow + g_xOffsets[x]);
-            }
+        if (g_rowBuffer.size() < srcPitch) g_rowBuffer.resize(srcPitch);
+        for (uint32_t y = 0; y < th; ++y) {
+            memcpy(g_rowBuffer.data(), src + (size_t)g_yOffsets[y] * srcPitch, (size_t)g_stagingWidth * 4);
+            uint32_t* dr = (uint32_t*)(dst + (size_t)y * tw * 4);
+            for (uint32_t x = 0; x < tw; ++x) dr[x] = *(uint32_t*)(g_rowBuffer.data() + g_xOffsets[x]);
         }
     }
-
-    uint8_t* base = g_sharedPtr;
-    *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_WIDTH)  = dstW;
-    *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_HEIGHT) = dstH;
-
-    if (slot == 0) {
-        *reinterpret_cast<uint64_t*>(base + FrameHeader::OFFSET_SLOT0_TIMESTAMP) = timestamp;
-        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT0_FRAME_IDX) = frameIndex;
-        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT0_READY)     = 1;
-    } else {
-        *reinterpret_cast<uint64_t*>(base + FrameHeader::OFFSET_SLOT1_TIMESTAMP) = timestamp;
-        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT1_FRAME_IDX) = frameIndex;
-        *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT1_READY)     = 1;
-    }
-
-    std::atomic_thread_fence(std::memory_order_release);
-    *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_WRITE_SLOT) = slot;
+    FrameHeader* h = (FrameHeader*)g_sharedPtr;
+    h->width = tw; h->height = th;
+    if (slot == 0) { h->slot0FrameIdx = fIdx; std::atomic_thread_fence(std::memory_order_release); h->slot0Ready = 1; }
+    else { h->slot1FrameIdx = fIdx; std::atomic_thread_fence(std::memory_order_release); h->slot1Ready = 1; }
+    h->writeSlot = slot;
 }
 
-void CaptureLoop(int targetFps) {
+static void CaptureLoopDXGI(int fps) {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     timeBeginPeriod(1);
-    
-    const auto frameDuration = std::chrono::microseconds(1000000 / targetFps);
-    uint32_t nextFrameIndex = 0;
-    uint32_t captureIdx = 0; // Next slot to write TO
-    uint32_t processIdx = 0; // Next slot to read FROM
-    uint32_t readyCount = 0; // How many are waiting for Map
-
-    uint64_t stagingTimestamp[3] = {0, 0, 0};
-    uint32_t stagingFrameIndex[3] = {0, 0, 0};
-
-    auto nextFrameStart = std::chrono::steady_clock::now();
+    uint32_t fIdx = 0, sIdx = 0, lastSIdx = 0;
+    bool hasFrame = false;
+    const auto interval = std::chrono::microseconds(1000000 / fps);
+    auto nextTime = std::chrono::steady_clock::now();
 
     while (g_running.load()) {
-        auto now = std::chrono::steady_clock::now();
-        
-        if (now > nextFrameStart + frameDuration * 5) {
-            nextFrameStart = now;
-        }
-
-    // 1. Process any waiting frames from PREVIOUS iterations.
-    // This ensures the GPU has had time (at least one frame duration) to finish CopyResource.
-    if (readyCount > 0) {
-        auto startMap = std::chrono::steady_clock::now();
-        ID3D11Texture2D* processStaging = g_stagingTex[processIdx].Get();
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        
-        // Blocking Map: since we are 1+ frame behind, this should be near-instant 
-        // unless the GPU is severely overwhelmed.
-        HRESULT mapHr = g_context->Map(processStaging, 0, D3D11_MAP_READ, 0, &mapped);
-        if (SUCCEEDED(mapHr)) {
-            const uint32_t slot = stagingFrameIndex[processIdx] & 1u;
-            // Clear the ready flag for the slot we are about to overwrite in shared memory
-            uint8_t* base = g_sharedPtr;
-            if (base) {
-                if (slot == 0) *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT0_READY) = 0;
-                else           *reinterpret_cast<uint32_t*>(base + FrameHeader::OFFSET_SLOT1_READY) = 0;
-            }
-
-            WriteScaledFrameToShared(
-                static_cast<const uint8_t*>(mapped.pData),
-                mapped.RowPitch,
-                stagingTimestamp[processIdx],
-                stagingFrameIndex[processIdx]
-            );
-            g_context->Unmap(processStaging, 0);
-        }
-        
-        auto endMap = std::chrono::steady_clock::now();
-        g_lastMapMs.store(static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(endMap - startMap).count()));
-
-        processIdx = (processIdx + 1) % 3;
-        readyCount--;
-    }
-
-        // 2. Wait and Acquire next frame
-        int32_t waitMs = 0;
-        now = std::chrono::steady_clock::now();
-        if (nextFrameStart > now) {
-            waitMs = static_cast<int32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(nextFrameStart - now).count());
-        }
-        if (waitMs < 1) waitMs = 1;
-
-        ComPtr<IDXGIResource> desktopResource;
-        DXGI_OUTDUPL_FRAME_INFO frameInfo;
-        
-        auto startAcquire = std::chrono::steady_clock::now();
-        HRESULT hr = g_duplication->AcquireNextFrame(waitMs, &frameInfo, &desktopResource);
-        auto endAcquire = std::chrono::steady_clock::now();
-        g_lastAcquireMs.store(static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(endAcquire - startAcquire).count()));
-        g_lastHr.store(hr);
-
-        if (SUCCEEDED(hr)) {
-            if (frameInfo.AccumulatedFrames > 0) {
-                ComPtr<ID3D11Texture2D> desktopTex;
-                if (SUCCEEDED(desktopResource.As(&desktopTex))) {
-                    ID3D11Texture2D* nextStaging = g_stagingTex[captureIdx].Get();
-                    g_context->CopyResource(nextStaging, desktopTex.Get());
-                    
-                    stagingTimestamp[captureIdx] = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch()
-                    ).count();
-                    stagingFrameIndex[captureIdx] = nextFrameIndex++;
-                    
-                    if (readyCount < 3) {
-                        readyCount++;
-                    } else {
-                        processIdx = (processIdx + 1) % 3;
-                    }
-                    captureIdx = (captureIdx + 1) % 3;
+        ComPtr<IDXGIResource> res;
+        DXGI_OUTDUPL_FRAME_INFO info{};
+        if (SUCCEEDED(g_duplication->AcquireNextFrame(2, &info, &res))) {
+            if (info.AccumulatedFrames > 0) {
+                ComPtr<ID3D11Texture2D> tex;
+                if (SUCCEEDED(res.As(&tex))) {
+                    sIdx = (sIdx + 1) % 3;
+                    g_context->CopyResource(g_stagingTex[sIdx].Get(), tex.Get());
+                    lastSIdx = sIdx;
+                    hasFrame = true;
                 }
             }
             g_duplication->ReleaseFrame();
-        } else if (hr != DXGI_ERROR_WAIT_TIMEOUT) {
-            g_running.store(false);
-            break;
         }
-
-        // 3. Cadence sleep
-        now = std::chrono::steady_clock::now();
-        if (now < nextFrameStart) {
-            std::this_thread::sleep_until(nextFrameStart);
+        if (hasFrame) {
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (SUCCEEDED(g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m))) {
+                WriteToShared((const uint8_t*)m.pData, m.RowPitch, fIdx++);
+                g_context->Unmap(g_stagingTex[lastSIdx].Get(), 0);
+            }
         }
-        nextFrameStart += frameDuration;
+        std::this_thread::sleep_until(nextTime += interval);
+        if (std::chrono::steady_clock::now() > nextTime + interval) nextTime = std::chrono::steady_clock::now();
     }
     timeEndPeriod(1);
 }
 
-Napi::Value AttachBuffer(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
+static void CaptureLoopWGC(int fps) {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    uint32_t fIdx = 0, sIdx = 0, lastSIdx = 0;
+    bool hasFrame = false;
+    const auto interval = std::chrono::microseconds(1000000 / fps);
+    auto nextTime = std::chrono::steady_clock::now();
 
-    if (info.Length() < 1) {
-        Napi::Error::New(env, "Expected Uint8Array").ThrowAsJavaScriptException();
-        return env.Undefined();
+    while (g_running.load()) {
+        try {
+            auto frame = g_wgcFramePool.TryGetNextFrame();
+            if (frame) {
+                auto contentSize = frame.ContentSize();
+                if ((uint32_t)contentSize.Width != g_stagingWidth || (uint32_t)contentSize.Height != g_stagingHeight) {
+                    CreateStagingTextures(contentSize.Width, contentSize.Height);
+                    g_wgcFramePool.Recreate(g_winrtDevice, winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized, 3, contentSize);
+                }
+                auto tex = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
+                if (tex) {
+                    sIdx = (sIdx + 1) % 3;
+                    g_context->CopyResource(g_stagingTex[sIdx].Get(), tex.get());
+                    lastSIdx = sIdx;
+                    hasFrame = true;
+                }
+            }
+        } catch (...) { break; }
+
+        if (hasFrame) {
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (SUCCEEDED(g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m))) {
+                WriteToShared((const uint8_t*)m.pData, m.RowPitch, fIdx++);
+                g_context->Unmap(g_stagingTex[lastSIdx].Get(), 0);
+            }
+        }
+        std::this_thread::sleep_until(nextTime += interval);
+        if (std::chrono::steady_clock::now() > nextTime + interval) nextTime = std::chrono::steady_clock::now();
     }
-
-    if (info[0].IsTypedArray()) {
-        auto arr = info[0].As<Napi::TypedArray>();
-        auto ab  = arr.ArrayBuffer();
-        g_sharedPtr  = static_cast<uint8_t*>(ab.Data()) + arr.ByteOffset();
-        g_sharedSize = arr.ByteLength();
-    } else if (info[0].IsArrayBuffer()) {
-        auto ab = info[0].As<Napi::ArrayBuffer>();
-        g_sharedPtr  = static_cast<uint8_t*>(ab.Data());
-        g_sharedSize = ab.ByteLength();
-    } else {
-        Napi::Error::New(env, "Expected Uint8Array or ArrayBuffer").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-
-    if (g_sharedSize >= FrameHeader::HEADER_SIZE)
-        memset(g_sharedPtr, 0, FrameHeader::HEADER_SIZE);
-
-    return Napi::Boolean::New(env, true);
 }
 
-Napi::Value StartCapture(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-
-    int adapterIndex = 0;
-    int outputIndex = 0;
-    int fps = 30;
-    g_targetWidth = 0;
-    g_targetHeight = 0;
-
-    if (info.Length() > 0 && info[0].IsObject()) {
-        auto opts = info[0].As<Napi::Object>();
-        if (opts.Has("adapterIndex"))
-            adapterIndex = opts.Get("adapterIndex").As<Napi::Number>().Int32Value();
-        if (opts.Has("outputIndex"))
-            outputIndex = opts.Get("outputIndex").As<Napi::Number>().Int32Value();
-        if (opts.Has("fps"))
-            fps = opts.Get("fps").As<Napi::Number>().Int32Value();
-        if (opts.Has("targetWidth"))
-            g_targetWidth = opts.Get("targetWidth").As<Napi::Number>().Uint32Value();
-        if (opts.Has("targetHeight"))
-            g_targetHeight = opts.Get("targetHeight").As<Napi::Number>().Uint32Value();
-    }
-
-    if (g_running.load()) {
-        Napi::Error::New(env, "Capture already running").ThrowAsJavaScriptException();
-        return Napi::Boolean::New(env, false);
-    }
-
-    if (g_captureThread.joinable())
-        g_captureThread.join();
-
-    g_duplication.Reset();
-    g_stagingTex[0].Reset();
-    g_stagingTex[1].Reset();
-    g_context.Reset();
-    g_device.Reset();
-
-    if (!g_sharedPtr || g_sharedSize == 0) {
-        Napi::Error::New(env, "Call attachBuffer() first").ThrowAsJavaScriptException();
-        return Napi::Boolean::New(env, false);
-    }
-
-    if (!InitDXGI(adapterIndex, outputIndex)) {
-        Napi::Error::New(env, "DXGI initialization failed").ThrowAsJavaScriptException();
-        return Napi::Boolean::New(env, false);
-    }
-
-    const size_t slotBytes = GetSlotBytes();
-    const size_t requiredBytes =
-        static_cast<size_t>(g_targetWidth) *
-        static_cast<size_t>(g_targetHeight) * 4;
-
-    if (slotBytes < requiredBytes) {
-        std::string msg =
-            "Shared buffer slot too small for target resolution. slotBytes=" + std::to_string(slotBytes) +
-            ", requiredBytes=" + std::to_string(requiredBytes) +
-            ", target=" + std::to_string(g_targetWidth) + "x" + std::to_string(g_targetHeight);
-
-        Napi::Error::New(env, msg).ThrowAsJavaScriptException();
-        g_duplication.Reset();
-        g_stagingTex[0].Reset();
-        g_stagingTex[1].Reset();
-        g_context.Reset();
-        g_device.Reset();
-        return Napi::Boolean::New(env, false);
-    }
-
-    g_running.store(true);
-
-    try {
-        g_captureThread = std::thread(CaptureLoop, fps);
-    } catch (const std::exception& ex) {
-        g_running.store(false);
-        g_duplication.Reset();
-        g_stagingTex[0].Reset();
-        g_stagingTex[1].Reset();
-        g_context.Reset();
-        g_device.Reset();
-
-        Napi::Error::New(env, std::string("Failed to start capture thread: ") + ex.what())
-            .ThrowAsJavaScriptException();
-        return Napi::Boolean::New(env, false);
-    }
-
-    return Napi::Boolean::New(env, true);
+Napi::Value StartDisplayCapture(const Napi::CallbackInfo& info) {
+    Napi::Object o = info[0].As<Napi::Object>();
+    ResetCaptureState();
+    g_targetWidth = o.Get("targetWidth").As<Napi::Number>().Uint32Value();
+    g_targetHeight = o.Get("targetHeight").As<Napi::Number>().Uint32Value();
+    ComPtr<IDXGIFactory1> f; CreateDXGIFactory1(IID_PPV_ARGS(&f));
+    ComPtr<IDXGIAdapter1> a; f->EnumAdapters1(o.Get("adapterIndex").As<Napi::Number>().Int32Value(), &a);
+    D3D11CreateDevice(a.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
+    ComPtr<IDXGIOutput> out; a->EnumOutputs(o.Get("outputIndex").As<Napi::Number>().Int32Value(), &out);
+    ComPtr<IDXGIOutput1> out1; out.As(&out1); out1->DuplicateOutput(g_device.Get(), &g_duplication);
+    DXGI_OUTPUT_DESC d{}; out->GetDesc(&d);
+    CreateStagingTextures(d.DesktopCoordinates.right - d.DesktopCoordinates.left, d.DesktopCoordinates.bottom - d.DesktopCoordinates.top);
+    g_running = true;
+    g_captureThread = std::thread(CaptureLoopDXGI, o.Get("fps").As<Napi::Number>().Int32Value());
+    return Napi::Boolean::New(info.Env(), true);
 }
 
-Napi::Value StopCapture(const Napi::CallbackInfo& info) {
-    g_running.store(false);
-
-    if (g_captureThread.joinable())
-        g_captureThread.join();
-
-    g_duplication.Reset();
-    g_stagingTex[0].Reset();
-    g_stagingTex[1].Reset();
-    g_context.Reset();
-    g_device.Reset();
-
-    g_outputWidth = 0;
-    g_outputHeight = 0;
-    g_targetWidth = 0;
-    g_targetHeight = 0;
-    g_xOffsets.clear();
-    g_yOffsets.clear();
-
-    return info.Env().Undefined();
-}
-
-Napi::Value GetInfo(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    auto result = Napi::Object::New(env);
-
-    result.Set("width", Napi::Number::New(env, g_targetWidth));
-    result.Set("height", Napi::Number::New(env, g_targetHeight));
-    result.Set("outputWidth", Napi::Number::New(env, g_outputWidth));
-    result.Set("outputHeight", Napi::Number::New(env, g_outputHeight));
-    result.Set("running", Napi::Boolean::New(env, g_running.load()));
-    result.Set("bufferSize", Napi::Number::New(env, static_cast<double>(g_sharedSize)));
-    result.Set("slotBytes", Napi::Number::New(env, static_cast<double>(GetSlotBytes())));
-    result.Set("lastHr", Napi::Number::New(env, static_cast<double>(g_lastHr.load())));
-    result.Set("lastAcquireMs", Napi::Number::New(env, static_cast<double>(g_lastAcquireMs.load())));
-    result.Set("lastMapMs", Napi::Number::New(env, static_cast<double>(g_lastMapMs.load())));
-
-    return result;
-}
-
-Napi::Value RequiredBufferSize(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-
-    uint32_t w = 1920;
-    uint32_t h = 1080;
-    if (info.Length() >= 2) {
-        w = info[0].As<Napi::Number>().Uint32Value();
-        h = info[1].As<Napi::Number>().Uint32Value();
-    }
-
-    const size_t slotBytes = static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
-    const size_t size = FrameHeader::HEADER_SIZE + (slotBytes * 2);
-
-    return Napi::Number::New(env, static_cast<double>(size));
+Napi::Value StartWindowCapture(const Napi::CallbackInfo& info) {
+    Napi::Object o = info[0].As<Napi::Object>();
+    ResetCaptureState();
+    g_targetWidth = o.Get("targetWidth").As<Napi::Number>().Uint32Value();
+    g_targetHeight = o.Get("targetHeight").As<Napi::Number>().Uint32Value();
+    D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
+    ComPtr<IDXGIDevice> dxgi; g_device.As(&dxgi);
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    winrt::com_ptr<::IInspectable> insp; CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(), insp.put());
+    g_winrtDevice = insp.as<wgd11::IDirect3DDevice>();
+    auto factory = winrt::get_activation_factory<wgc::GraphicsCaptureItem>();
+    winrt::com_ptr<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem> abiItem;
+    factory.as<IGraphicsCaptureItemInterop>()->CreateForWindow((HWND)(uintptr_t)o.Get("hwnd").As<Napi::Number>().Int64Value(), winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(), abiItem.put_void());
+    auto item = abiItem.as<wgc::GraphicsCaptureItem>();
+    auto size = item.Size();
+    CreateStagingTextures(size.Width, size.Height);
+    g_wgcFramePool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(g_winrtDevice, winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized, 3, size);
+    g_wgcSession = g_wgcFramePool.CreateCaptureSession(item);
+    try { g_wgcSession.IsCursorCaptureEnabled(true); } catch(...) {}
+    try { g_wgcSession.IsBorderRequired(false); } catch(...) {}
+    g_wgcSession.StartCapture();
+    g_running = true;
+    g_captureThread = std::thread(CaptureLoopWGC, o.Get("fps").As<Napi::Number>().Int32Value());
+    return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    exports.Set("attachBuffer",       Napi::Function::New(env, AttachBuffer));
-    exports.Set("startCapture",       Napi::Function::New(env, StartCapture));
-    exports.Set("stopCapture",        Napi::Function::New(env, StopCapture));
-    exports.Set("getInfo",            Napi::Function::New(env, GetInfo));
-    exports.Set("requiredBufferSize", Napi::Function::New(env, RequiredBufferSize));
-    exports.Set("buildTag",           Napi::String::New(env, "optimized-v8-atomic-ready"));
-
-    auto header = Napi::Object::New(env);
-    header.Set("OFFSET_WIDTH",           Napi::Number::New(env, FrameHeader::OFFSET_WIDTH));
-    header.Set("OFFSET_HEIGHT",          Napi::Number::New(env, FrameHeader::OFFSET_HEIGHT));
-    header.Set("OFFSET_WRITE_SLOT",      Napi::Number::New(env, FrameHeader::OFFSET_WRITE_SLOT));
-    header.Set("OFFSET_RESERVED",        Napi::Number::New(env, FrameHeader::OFFSET_RESERVED));
-    header.Set("OFFSET_SLOT0_TIMESTAMP", Napi::Number::New(env, FrameHeader::OFFSET_SLOT0_TIMESTAMP));
-    header.Set("OFFSET_SLOT0_FRAME_IDX", Napi::Number::New(env, FrameHeader::OFFSET_SLOT0_FRAME_IDX));
-    header.Set("OFFSET_SLOT0_READY",     Napi::Number::New(env, FrameHeader::OFFSET_SLOT0_READY));
-    header.Set("OFFSET_SLOT1_TIMESTAMP", Napi::Number::New(env, FrameHeader::OFFSET_SLOT1_TIMESTAMP));
-    header.Set("OFFSET_SLOT1_FRAME_IDX", Napi::Number::New(env, FrameHeader::OFFSET_SLOT1_FRAME_IDX));
-    header.Set("OFFSET_SLOT1_READY",     Napi::Number::New(env, FrameHeader::OFFSET_SLOT1_READY));
-    header.Set("HEADER_SIZE",            Napi::Number::New(env, FrameHeader::HEADER_SIZE));
-    exports.Set("FrameHeader", header);
-
+    exports.Set("attachBuffer", Napi::Function::New(env, [](const Napi::CallbackInfo& info){
+        auto arr = info[0].As<Napi::TypedArray>();
+        g_sharedPtr = (uint8_t*)arr.ArrayBuffer().Data() + arr.ByteOffset();
+        g_sharedSize = arr.ByteLength();
+        if (g_sharedPtr) memset(g_sharedPtr, 0, 48);
+        return info.Env().Undefined();
+    }));
+    exports.Set("startDisplayCapture", Napi::Function::New(env, StartDisplayCapture));
+    exports.Set("startWindowCapture", Napi::Function::New(env, StartWindowCapture));
+    exports.Set("stopCapture", Napi::Function::New(env, [](const Napi::CallbackInfo&){ ResetCaptureState(); }));
+    exports.Set("requiredBufferSize", Napi::Function::New(env, [](const Napi::CallbackInfo& info){
+        return Napi::Number::New(info.Env(), (double)(48 + (size_t)info[0].As<Napi::Number>().Uint32Value() * info[1].As<Napi::Number>().Uint32Value() * 8));
+    }));
+    exports.Set("getInfo", Napi::Function::New(env, [](const Napi::CallbackInfo& info){
+        Napi::Object res = Napi::Object::New(info.Env());
+        res.Set("running", g_running.load()); res.Set("width", (uint32_t)g_targetWidth.load()); res.Set("height", (uint32_t)g_targetHeight.load());
+        return res;
+    }));
+    exports.Set("getCapabilities", Napi::Function::New(env, [](const Napi::CallbackInfo& info){
+        Napi::Object c = Napi::Object::New(info.Env()); c.Set("dxgiDisplay", true); c.Set("wgcWindow", true); return c;
+    }));
+    Napi::Object h = Napi::Object::New(env);
+    h.Set("OFFSET_WIDTH", 0.0); h.Set("OFFSET_HEIGHT", 4.0); h.Set("OFFSET_WRITE_SLOT", 8.0);
+    h.Set("OFFSET_SLOT0_FRAME_IDX", 24.0); h.Set("OFFSET_SLOT0_READY", 28.0);
+    h.Set("OFFSET_SLOT1_FRAME_IDX", 40.0); h.Set("OFFSET_SLOT1_READY", 44.0);
+    h.Set("HEADER_SIZE", 48.0); exports.Set("FrameHeader", h);
     return exports;
 }
-
 NODE_API_MODULE(native_capture, Init)

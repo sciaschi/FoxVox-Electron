@@ -17,5 +17,5 @@ window.electronAPI = {
         ipcRenderer.on("maximize-change", (_event, value) => cb(value));
     },
 
-    getDesktopSources: () => ipcRenderer.invoke("get-desktop-sources"),
+    getDesktopSources: (opts = {}) => ipcRenderer.invoke("get-desktop-sources", opts),
 };
