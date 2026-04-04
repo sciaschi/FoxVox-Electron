@@ -146,6 +146,8 @@ function registerNativeCapture(targetWindow) {
             targetHeight: ensured.height,
         };
 
+        console.log("[NativeCapture] startDisplayCapture forwarded:", forwarded);
+
         if (typeof addon.startDisplayCapture === "function")
             return !!addon.startDisplayCapture(forwarded);
 

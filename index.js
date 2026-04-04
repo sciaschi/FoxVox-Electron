@@ -86,8 +86,18 @@ app.whenReady().then(() => {
         const includeWindows = opts.includeWindows !== false;
 
         const displays = screen.getAllDisplays();
-        const displayIndexById = new Map(displays.map((d, idx) => [Number(d.id), idx]));
-        const displayById = new Map(displays.map((d) => [Number(d.id), d]));
+        console.log("[Displays raw]", displays.map(d => ({
+            id: d.id,
+            bounds: d.bounds,
+            scaleFactor: d.scaleFactor,
+        })));
+
+        const displaysSortedByPosition = [...displays].sort(
+            (a, b) => a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y
+        );
+        const displayBySequentialIndex = new Map(
+            displaysSortedByPosition.map((d, idx) => [idx, d])
+        );
 
         const sources = await desktopCapturer.getSources({
             types: [
@@ -109,12 +119,11 @@ app.whenReady().then(() => {
             let windowId = parsed.windowId ?? null;
 
             if (parsed.kind === "screen") {
-                dxgiOutputIndex = displayIndexById.get(parsed.screenId) ?? 0;
-
-                const display = displayById.get(parsed.screenId);
+                const display = displayBySequentialIndex.get(parsed.screenId);
                 if (display) {
-                    nativeWidth = Number(display.bounds?.width ?? display.size?.width ?? 0) || null;
-                    nativeHeight = Number(display.bounds?.height ?? display.size?.height ?? 0) || null;
+                    dxgiOutputIndex = parsed.screenId;
+                    nativeWidth = display.bounds.width || null;
+                    nativeHeight = display.bounds.height || null;
                     screenId = Number(display.id);
                 }
             }

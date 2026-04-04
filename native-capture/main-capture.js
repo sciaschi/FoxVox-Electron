@@ -1,7 +1,3 @@
-// native-capture/main-capture.js
-// Runs in the MAIN process. Loads the addon, creates SharedArrayBuffer,
-// shares it to renderer via one-time IPC.
-
 const path = require("path");
 
 let addon = null;
@@ -21,7 +17,6 @@ function register(ipcMain) {
         return;
     }
 
-    // Renderer calls this once to get the SharedArrayBuffer + header layout
     ipcMain.handle("native-capture:init", async (_event, opts) => {
         try {
             const width = opts.width || 1920;
