@@ -171,8 +171,6 @@ app.whenReady().then(() => {
     ipcMain.on("clipboard-write", (_event, text) => {
         clipboard.writeText(text ?? "");
     });
-
-    createWindow();
 });
 
 app.on("window-all-closed", () => {
