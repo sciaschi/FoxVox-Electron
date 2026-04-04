@@ -53,12 +53,18 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, "dist/index.html"));
 }
 
+function openWindowOnce() {
+    autoUpdater.removeAllListeners("update-not-available");
+    autoUpdater.removeAllListeners("error");
+    createWindow();
+}
+
 app.whenReady().then(() => {
 
     updateElectronApp();
 
-    autoUpdater.once("update-not-available", createWindow);
-    autoUpdater.once("error", createWindow);
+    autoUpdater.once("update-not-available", openWindowOnce);
+    autoUpdater.once("error", openWindowOnce);
 
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         callback({
