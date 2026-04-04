@@ -67,11 +67,30 @@ app.whenReady().then(() => {
         callback({
             responseHeaders: {
                 ...details.responseHeaders,
-                "Cross-Origin-Opener-Policy": ["same-origin"],
+                "Cross-Origin-Opener-Policy":   ["same-origin"],
                 "Cross-Origin-Embedder-Policy": ["credentialless"],
-                "Access-Control-Allow-Origin": ["*"],
+                "Access-Control-Allow-Origin":  ["*"],
                 "Access-Control-Allow-Methods": ["GET, POST, PUT, DELETE, OPTIONS"],
                 "Access-Control-Allow-Headers": ["Content-Type, Authorization"],
+                "Content-Security-Policy": [`
+                default-src   'self';
+                script-src    'self';
+                style-src     'self' 'unsafe-inline' https://fonts.googleapis.com;
+                font-src      'self' https://fonts.gstatic.com;
+                img-src       'self' file: data: blob: https:;
+                media-src     'self' file: blob:;
+                frame-src     https://www.youtube.com https://youtube.com
+                              https://giphy.com https://tenor.com
+                              https://twitter.com https://platform.twitter.com;
+                connect-src   'self'
+                              https://api.foxvox.app
+                              wss://gw.foxvox.app
+                              https://*.amazonaws.com;
+                worker-src    'self' blob:;
+                object-src    'none';
+                base-uri      'self';
+                form-action   'self';
+            `],
             },
         });
     });
