@@ -1,6 +1,6 @@
 const path = require("path");
-const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, session, screen } = require("electron");
-const {updateElectronApp} = require("update-electron-app");
+const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, session, screen, autoUpdater } = require("electron");
+const { updateElectronApp } = require("update-electron-app");
 
 let mainWindow = null;
 
@@ -56,6 +56,9 @@ function createWindow() {
 app.whenReady().then(() => {
 
     updateElectronApp();
+
+    autoUpdater.once("update-not-available", createWindow);
+    autoUpdater.once("error", createWindow);
 
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         callback({
