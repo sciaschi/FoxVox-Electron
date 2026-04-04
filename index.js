@@ -4,6 +4,10 @@ const { updateElectronApp } = require("update-electron-app");
 
 let mainWindow = null;
 
+if (require("electron-squirrel-startup")) {
+    app.quit();
+}
+
 function normalizeSourceKind(sourceId = "") {
     if (sourceId.startsWith("window:")) return "window";
     if (sourceId.startsWith("screen:")) return "screen";
@@ -53,18 +57,11 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, "dist/index.html"));
 }
 
-function openWindowOnce() {
-    autoUpdater.removeAllListeners("update-not-available");
-    autoUpdater.removeAllListeners("error");
-    createWindow();
-}
-
 app.whenReady().then(() => {
 
     updateElectronApp();
 
-    autoUpdater.once("update-not-available", openWindowOnce);
-    autoUpdater.once("error", openWindowOnce);
+    createWindow();
 
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         callback({
