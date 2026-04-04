@@ -1,5 +1,6 @@
 const path = require("path");
 const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, session, screen } = require("electron");
+const {updateElectronApp} = require("update-electron-app");
 
 let mainWindow = null;
 
@@ -53,6 +54,9 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+
+    updateElectronApp();
+
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         callback({
             responseHeaders: {
