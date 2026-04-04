@@ -1,0 +1,45 @@
+name: Cleanup Old Releases
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Delete all but the last 2 releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          releases=$(gh api repos/$REPO/releases --paginate \
+            --jq 'sort_by(.created_at) | reverse | .[].id')
+
+          total=$(echo "$releases" | wc -l)
+          echo "Found $total release(s) total"
+
+          if [ "$total" -le 2 ]; then
+            echo "2 or fewer releases found, nothing to delete."
+            exit 0
+          fi
+
+          to_delete=$(echo "$releases" | tail -n +3)
+          count=$(echo "$to_delete" | wc -l)
+          echo "Deleting $count old release(s)..."
+
+          while IFS= read -r release_id; do
+            tag=$(gh api repos/$REPO/releases/$release_id --jq '.tag_name')
+            echo "Deleting release $release_id (tag: $tag)"
+
+            gh api --method DELETE repos/$REPO/releases/$release_id
+
+            gh api --method DELETE repos/$REPO/git/refs/tags/$tag || \
+              echo "Warning: could not delete tag $tag (may not exist)"
+          done <<< "$to_delete"
+
+          echo "Done."
