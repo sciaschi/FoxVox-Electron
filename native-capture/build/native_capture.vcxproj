@@ -11,7 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{3353B6DE-19CD-2AA2-CB7E-98554BE74C90}</ProjectGuid>
+    <ProjectGuid>{AF89A0B5-4E0E-3B1E-9C30-2CC7F3EB34D8}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>native_capture</RootNamespace>
     <IgnoreWarnCompileDuplicatedFilename>true</IgnoreWarnCompileDuplicatedFilename>
@@ -23,7 +23,7 @@
     <ConfigurationType>DynamicLibrary</ConfigurationType>
   </PropertyGroup>
   <PropertyGroup Label="Locals">
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props"/>
   <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props"/>
@@ -48,7 +48,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\scias\.electron-gyp\40.8.5\include\node;C:\Users\scias\.electron-gyp\40.8.5\src;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\config;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\openssl\include;C:\Users\scias\.electron-gyp\40.8.5\deps\uv\include;C:\Users\scias\.electron-gyp\40.8.5\deps\zlib;C:\Users\scias\.electron-gyp\40.8.5\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\include\node;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\src;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\config;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\openssl\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\uv\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\zlib;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:__cplusplus -std:c++20 /Zm2000 /std:c++20 /EHsc %(AdditionalOptions)</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <BufferSecurityCheck>true</BufferSecurityCheck>
@@ -60,7 +60,7 @@
       <OmitFramePointers>false</OmitFramePointers>
       <Optimization>Disabled</Optimization>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;_FILE_OFFSET_BITS=64;ELECTRON_ENSURE_CONFIG_GYPI;USING_ELECTRON_CONFIG_GYPI;V8_COMPRESS_POINTERS;V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES;V8_31BIT_SMIS_ON_64BIT_ARCH;V8_ENABLE_SANDBOX;V8_EXTERNAL_CODE_SPACE;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;OPENSSL_NO_ASM;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;DEBUG;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;DEBUG;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <StringPooling>true</StringPooling>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -72,7 +72,7 @@
       <AdditionalOptions>/LTCG:INCREMENTAL %(AdditionalOptions)</AdditionalOptions>
     </Lib>
     <Link>
-      <AdditionalDependencies>windowsapp.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;DelayImp.lib;&quot;C:\\Users\\scias\\.electron-gyp\\40.8.5\\x64\\node.lib&quot;</AdditionalDependencies>
+      <AdditionalDependencies>windowsapp.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;delayimp.lib;&quot;C:\\Users\\scias\\AppData\\Local\\node-gyp\\Cache\\22.14.0\\x64\\node.lib&quot;</AdditionalDependencies>
       <AdditionalOptions>/LTCG:INCREMENTAL /ignore:4199 %(AdditionalOptions)</AdditionalOptions>
       <DelayLoadDLLs>node.exe;%(DelayLoadDLLs)</DelayLoadDLLs>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -84,13 +84,13 @@
       <TargetMachine>MachineX64</TargetMachine>
     </Link>
     <ResourceCompile>
-      <AdditionalIncludeDirectories>C:\Users\scias\.electron-gyp\40.8.5\include\node;C:\Users\scias\.electron-gyp\40.8.5\src;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\config;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\openssl\include;C:\Users\scias\.electron-gyp\40.8.5\deps\uv\include;C:\Users\scias\.electron-gyp\40.8.5\deps\zlib;C:\Users\scias\.electron-gyp\40.8.5\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;_FILE_OFFSET_BITS=64;ELECTRON_ENSURE_CONFIG_GYPI;USING_ELECTRON_CONFIG_GYPI;V8_COMPRESS_POINTERS;V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES;V8_31BIT_SMIS_ON_64BIT_ARCH;V8_ENABLE_SANDBOX;V8_EXTERNAL_CODE_SPACE;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;OPENSSL_NO_ASM;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;DEBUG;_DEBUG;%(PreprocessorDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\include\node;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\src;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\config;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\openssl\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\uv\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\zlib;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;DEBUG;_DEBUG;%(PreprocessorDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\scias\.electron-gyp\40.8.5\include\node;C:\Users\scias\.electron-gyp\40.8.5\src;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\config;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\openssl\include;C:\Users\scias\.electron-gyp\40.8.5\deps\uv\include;C:\Users\scias\.electron-gyp\40.8.5\deps\zlib;C:\Users\scias\.electron-gyp\40.8.5\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\include\node;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\src;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\config;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\openssl\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\uv\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\zlib;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:__cplusplus -std:c++20 /Zm2000 /std:c++20 /EHsc %(AdditionalOptions)</AdditionalOptions>
       <BufferSecurityCheck>true</BufferSecurityCheck>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
@@ -104,7 +104,7 @@
       <OmitFramePointers>true</OmitFramePointers>
       <Optimization>Full</Optimization>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;_FILE_OFFSET_BITS=64;ELECTRON_ENSURE_CONFIG_GYPI;USING_ELECTRON_CONFIG_GYPI;V8_COMPRESS_POINTERS;V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES;V8_31BIT_SMIS_ON_64BIT_ARCH;V8_ENABLE_SANDBOX;V8_EXTERNAL_CODE_SPACE;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;OPENSSL_NO_ASM;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <StringPooling>true</StringPooling>
@@ -117,7 +117,7 @@
       <AdditionalOptions>/LTCG:INCREMENTAL %(AdditionalOptions)</AdditionalOptions>
     </Lib>
     <Link>
-      <AdditionalDependencies>windowsapp.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;DelayImp.lib;&quot;C:\\Users\\scias\\.electron-gyp\\40.8.5\\x64\\node.lib&quot;</AdditionalDependencies>
+      <AdditionalDependencies>windowsapp.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;delayimp.lib;&quot;C:\\Users\\scias\\AppData\\Local\\node-gyp\\Cache\\22.14.0\\x64\\node.lib&quot;</AdditionalDependencies>
       <AdditionalOptions>/LTCG:INCREMENTAL /ignore:4199 %(AdditionalOptions)</AdditionalOptions>
       <DelayLoadDLLs>node.exe;%(DelayLoadDLLs)</DelayLoadDLLs>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -129,8 +129,8 @@
       <TargetMachine>MachineX64</TargetMachine>
     </Link>
     <ResourceCompile>
-      <AdditionalIncludeDirectories>C:\Users\scias\.electron-gyp\40.8.5\include\node;C:\Users\scias\.electron-gyp\40.8.5\src;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\config;C:\Users\scias\.electron-gyp\40.8.5\deps\openssl\openssl\include;C:\Users\scias\.electron-gyp\40.8.5\deps\uv\include;C:\Users\scias\.electron-gyp\40.8.5\deps\zlib;C:\Users\scias\.electron-gyp\40.8.5\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;_FILE_OFFSET_BITS=64;ELECTRON_ENSURE_CONFIG_GYPI;USING_ELECTRON_CONFIG_GYPI;V8_COMPRESS_POINTERS;V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES;V8_31BIT_SMIS_ON_64BIT_ARCH;V8_ENABLE_SANDBOX;V8_EXTERNAL_CODE_SPACE;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;OPENSSL_NO_ASM;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;%(PreprocessorDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\include\node;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\src;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\config;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\openssl\openssl\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\uv\include;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\zlib;C:\Users\scias\AppData\Local\node-gyp\Cache\22.14.0\deps\v8\include;E:\FoxVox-Electron\native-capture\node_modules\node-addon-api;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NODE_GYP_MODULE_NAME=native_capture;USING_UV_SHARED=1;USING_V8_SHARED=1;V8_DEPRECATION_WARNINGS=1;_GLIBCXX_USE_CXX11_ABI=1;WIN32;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_HAS_EXCEPTIONS=0;NOMINMAX;OPENSSL_NO_PINSHARED;OPENSSL_THREADS;NAPI_CPP_EXCEPTIONS;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WINRT_LEAN_AND_MEAN;BUILDING_NODE_EXTENSION;HOST_BINARY=&quot;node.exe&quot;;%(PreprocessorDefinitions);%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -140,7 +140,7 @@
     <ClCompile Include="..\src\capture.cpp">
       <ObjectFileName>$(IntDir)\src\capture.obj</ObjectFileName>
     </ClCompile>
-    <ClCompile Include="E:\FoxVox-Electron\node_modules\@electron\node-gyp\src\win_delay_load_hook.cc"/>
+    <ClCompile Include="E:\FoxVox-Electron\native-capture\node_modules\node-gyp\src\win_delay_load_hook.cc"/>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets"/>
   <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets"/>
