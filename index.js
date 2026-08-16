@@ -55,6 +55,17 @@ function createWindow() {
     });
 
     mainWindow.loadFile(path.join(__dirname, "dist/index.html"));
+
+    mainWindow.on("close", (e) => {
+        if (!mainWindow.isClearedForClose) {
+            e.preventDefault();
+            mainWindow.webContents.executeJavaScript(`localStorage.removeItem("server")`)
+                .finally(() => {
+                    mainWindow.isClearedForClose = true;
+                    mainWindow.close();
+                });
+        }
+    });
 }
 
 app.whenReady().then(() => {
@@ -184,7 +195,9 @@ app.whenReady().then(() => {
         mainWindow.webContents.send("maximize-change", mainWindow.isMaximized());
     });
 
-    ipcMain.on("window-close", () => mainWindow?.close());
+    ipcMain.on("window-close", () => {
+        mainWindow?.close();
+    });
 
     ipcMain.on("navigate-back", () => {
         if (mainWindow?.webContents.canGoBack())
@@ -199,11 +212,13 @@ app.whenReady().then(() => {
     ipcMain.on("clipboard-write", (_event, text) => {
         clipboard.writeText(text ?? "");
     });
+
 });
 
 app.on("window-all-closed", () => {
-    if (process.platform !== "darwin")
+    if (process.platform !== "darwin") {
         app.quit();
+    }
 });
 
 app.on("activate", () => {
