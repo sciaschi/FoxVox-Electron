@@ -33,7 +33,7 @@ module.exports = {
           name: 'FoxVox-Electron',
         },
         prerelease: false,
-        draft: true,
+        draft: false,
       },
     },
   ],
