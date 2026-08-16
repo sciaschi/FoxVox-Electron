@@ -127,6 +127,17 @@ static void CaptureLoopDXGI(int fps) {
     timeBeginPeriod(1);
     uint32_t fIdx = 0, sIdx = 0, lastSIdx = 0;
     const auto interval = std::chrono::microseconds(1000000 / fps);
+
+    // AcquireNextFrame's timeout must cover roughly a full frame interval,
+    // not a tiny fixed window. Desktop compositor updates aren't synced to
+    // our loop's timing, so a 2ms timeout very often misses a frame that
+    // arrives a few ms later in the same tick - that previously didn't
+    // matter because we always fell back to re-sending the last frame, but
+    // now that we only write on a genuine new frame (see below), missing
+    // the window here means we write nothing at all for that tick.
+    const DWORD acquireTimeoutMs = (DWORD)std::max<int64_t>(
+        1, std::chrono::duration_cast<std::chrono::milliseconds>(interval).count());
+
     auto nextTime = std::chrono::steady_clock::now();
 
     while (g_running.load()) {
@@ -139,7 +150,7 @@ static void CaptureLoopDXGI(int fps) {
 
         ComPtr<IDXGIResource> res;
         DXGI_OUTDUPL_FRAME_INFO info{};
-        if (SUCCEEDED(g_duplication->AcquireNextFrame(2, &info, &res))) {
+        if (SUCCEEDED(g_duplication->AcquireNextFrame(acquireTimeoutMs, &info, &res))) {
             if (info.AccumulatedFrames > 0) {
                 ComPtr<ID3D11Texture2D> tex;
                 if (SUCCEEDED(res.As(&tex))) {
@@ -158,8 +169,18 @@ static void CaptureLoopDXGI(int fps) {
                 g_context->Unmap(g_stagingTex[lastSIdx].Get(), 0);
             }
         }
-        std::this_thread::sleep_until(nextTime += interval);
-        if (std::chrono::steady_clock::now() > nextTime + interval) nextTime = std::chrono::steady_clock::now();
+
+        // AcquireNextFrame already blocked for most/all of the interval, so
+        // only sleep the remainder if a frame came back quickly. Avoids
+        // double-waiting a full interval on top of an already-blocking call.
+        auto now = std::chrono::steady_clock::now();
+        auto target = nextTime + interval;
+        if (now < target) {
+            std::this_thread::sleep_until(target);
+            nextTime = target;
+        } else {
+            nextTime = now;
+        }
     }
     timeEndPeriod(1);
 }
