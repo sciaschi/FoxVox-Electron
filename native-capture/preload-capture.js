@@ -24,8 +24,9 @@ function registerNativeCapture(targetWindow) {
         const safeWidth = Number(width);
         const safeHeight = Number(height);
 
-        if (!Number.isFinite(safeWidth) || !Number.isFinite(safeHeight) || safeWidth <= 0 || safeHeight <= 0)
+        if (!Number.isFinite(safeWidth) || !Number.isFinite(safeHeight) || safeWidth <= 0 || safeHeight <= 0) {
             throw new Error(`Invalid capture dimensions: ${width}x${height}`);
+        }
 
         if (typeof addon.getInfo === "function" && addon.getInfo()?.running) {
             try {
