@@ -27,6 +27,14 @@ function registerNativeCapture(targetWindow) {
         if (!Number.isFinite(safeWidth) || !Number.isFinite(safeHeight) || safeWidth <= 0 || safeHeight <= 0)
             throw new Error(`Invalid capture dimensions: ${width}x${height}`);
 
+        if (typeof addon.getInfo === "function" && addon.getInfo()?.running) {
+            try {
+                addon.stopCapture();
+            } catch (err) {
+                console.error("[NativeCapture] stopCapture before buffer swap failed:", err);
+            }
+        }
+
         const size = Number(addon.requiredBufferSize(safeWidth, safeHeight));
         sharedBuffer = new SharedArrayBuffer(size);
 

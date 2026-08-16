@@ -126,11 +126,17 @@ static void CaptureLoopDXGI(int fps) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     timeBeginPeriod(1);
     uint32_t fIdx = 0, sIdx = 0, lastSIdx = 0;
-    bool hasFrame = false;
     const auto interval = std::chrono::microseconds(1000000 / fps);
     auto nextTime = std::chrono::steady_clock::now();
 
     while (g_running.load()) {
+        // Only true if THIS tick actually produced a new frame. Previously
+        // "hasFrame" latched true forever after the first frame, so every
+        // tick re-mapped and re-wrote the last staging texture even when
+        // the desktop hadn't changed at all - wasted GPU readback + CPU
+        // scale/copy on every idle frame.
+        bool gotNewFrameThisTick = false;
+
         ComPtr<IDXGIResource> res;
         DXGI_OUTDUPL_FRAME_INFO info{};
         if (SUCCEEDED(g_duplication->AcquireNextFrame(2, &info, &res))) {
@@ -140,12 +146,12 @@ static void CaptureLoopDXGI(int fps) {
                     sIdx = (sIdx + 1) % 3;
                     g_context->CopyResource(g_stagingTex[sIdx].Get(), tex.Get());
                     lastSIdx = sIdx;
-                    hasFrame = true;
+                    gotNewFrameThisTick = true;
                 }
             }
             g_duplication->ReleaseFrame();
         }
-        if (hasFrame) {
+        if (gotNewFrameThisTick) {
             D3D11_MAPPED_SUBRESOURCE m{};
             if (SUCCEEDED(g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m))) {
                 WriteToShared((const uint8_t*)m.pData, m.RowPitch, fIdx++);
@@ -162,11 +168,14 @@ static void CaptureLoopWGC(int fps) {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     uint32_t fIdx = 0, sIdx = 0, lastSIdx = 0;
-    bool hasFrame = false;
     const auto interval = std::chrono::microseconds(1000000 / fps);
     auto nextTime = std::chrono::steady_clock::now();
 
     while (g_running.load()) {
+        // Same fix as CaptureLoopDXGI: only Map/WriteToShared when this
+        // tick actually pulled a new frame from the pool.
+        bool gotNewFrameThisTick = false;
+
         try {
             auto frame = g_wgcFramePool.TryGetNextFrame();
             if (frame) {
@@ -180,12 +189,12 @@ static void CaptureLoopWGC(int fps) {
                     sIdx = (sIdx + 1) % 3;
                     g_context->CopyResource(g_stagingTex[sIdx].Get(), tex.get());
                     lastSIdx = sIdx;
-                    hasFrame = true;
+                    gotNewFrameThisTick = true;
                 }
             }
         } catch (...) { break; }
 
-        if (hasFrame) {
+        if (gotNewFrameThisTick) {
             D3D11_MAPPED_SUBRESOURCE m{};
             if (SUCCEEDED(g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m))) {
                 WriteToShared((const uint8_t*)m.pData, m.RowPitch, fIdx++);
