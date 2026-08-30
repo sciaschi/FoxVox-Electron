@@ -55,6 +55,17 @@ static wgc::Direct3D11CaptureFramePool g_wgcFramePool{ nullptr };
 static wgc::GraphicsCaptureSession     g_wgcSession{ nullptr };
 static wgd11::IDirect3DDevice          g_winrtDevice{ nullptr };
 
+// Diagnostics - previously StartDisplayCapture always returned true and
+// swallowed every HRESULT, so a failed device/duplication init looked
+// identical to success from JS. These make real failures visible via
+// getInfo() instead of manifesting as "capture started, but nothing ever
+// streams" with zero explanation.
+static std::atomic<int32_t> g_lastHr{ 0 };          // last non-timeout failing HRESULT
+static std::atomic<int64_t> g_lastAcquireMs{ 0 };   // GetTickCount64() of last successful frame acquire
+static std::atomic<int64_t> g_lastMapMs{ 0 };       // GetTickCount64() of last successful Map+WriteToShared
+static std::atomic<int>     g_mode{ 0 };            // 0 = none, 1 = dxgi, 2 = wgc
+static std::atomic<uint32_t> g_targetHwnd{ 0 };
+
 template <typename T>
 static winrt::com_ptr<T> GetDXGIInterfaceFromObject(winrt::Windows::Foundation::IInspectable const& object) {
     auto access = object.as<IDirect3DDxgiInterfaceAccess>();
@@ -73,6 +84,8 @@ static void ResetCaptureState() {
     g_winrtDevice = nullptr;
     g_context.Reset();
     g_device.Reset();
+    g_mode.store(0);
+    g_targetHwnd.store(0);
 }
 
 static bool CreateStagingTextures(uint32_t w, uint32_t h) {
@@ -82,7 +95,8 @@ static bool CreateStagingTextures(uint32_t w, uint32_t h) {
     D3D11_TEXTURE2D_DESC d = {w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1,0}, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0};
     for (int i = 0; i < 3; ++i) {
         g_stagingTex[i].Reset();
-        if (FAILED(g_device->CreateTexture2D(&d, nullptr, &g_stagingTex[i]))) return false;
+        HRESULT hr = g_device->CreateTexture2D(&d, nullptr, &g_stagingTex[i]);
+        if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return false; }
     }
     return true;
 }
@@ -119,6 +133,8 @@ static void WriteToShared(const uint8_t* src, uint32_t srcPitch, uint32_t fIdx) 
     if (slot == 0) { h->slot0FrameIdx = fIdx; std::atomic_thread_fence(std::memory_order_release); h->slot0Ready = 1; }
     else { h->slot1FrameIdx = fIdx; std::atomic_thread_fence(std::memory_order_release); h->slot1Ready = 1; }
     h->writeSlot = slot;
+
+    g_lastMapMs.store((int64_t)GetTickCount64());
 }
 
 static void CaptureLoopDXGI(int fps) {
@@ -150,7 +166,8 @@ static void CaptureLoopDXGI(int fps) {
 
         ComPtr<IDXGIResource> res;
         DXGI_OUTDUPL_FRAME_INFO info{};
-        if (SUCCEEDED(g_duplication->AcquireNextFrame(acquireTimeoutMs, &info, &res))) {
+        HRESULT hr = g_duplication->AcquireNextFrame(acquireTimeoutMs, &info, &res);
+        if (SUCCEEDED(hr)) {
             if (info.AccumulatedFrames > 0) {
                 ComPtr<ID3D11Texture2D> tex;
                 if (SUCCEEDED(res.As(&tex))) {
@@ -158,15 +175,24 @@ static void CaptureLoopDXGI(int fps) {
                     g_context->CopyResource(g_stagingTex[sIdx].Get(), tex.Get());
                     lastSIdx = sIdx;
                     gotNewFrameThisTick = true;
+                    g_lastAcquireMs.store((int64_t)GetTickCount64());
                 }
             }
             g_duplication->ReleaseFrame();
+        } else if (hr != DXGI_ERROR_WAIT_TIMEOUT) {
+            // A real failure (e.g. DXGI_ERROR_ACCESS_LOST from a desktop
+            // switch, UAC prompt, or GPU driver reset) - not just "no new
+            // frame yet". Surface it instead of looping silently forever.
+            g_lastHr.store((int32_t)hr);
         }
         if (gotNewFrameThisTick) {
             D3D11_MAPPED_SUBRESOURCE m{};
-            if (SUCCEEDED(g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m))) {
+            HRESULT mapHr = g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m);
+            if (SUCCEEDED(mapHr)) {
                 WriteToShared((const uint8_t*)m.pData, m.RowPitch, fIdx++);
                 g_context->Unmap(g_stagingTex[lastSIdx].Get(), 0);
+            } else {
+                g_lastHr.store((int32_t)mapHr);
             }
         }
 
@@ -211,15 +237,19 @@ static void CaptureLoopWGC(int fps) {
                     g_context->CopyResource(g_stagingTex[sIdx].Get(), tex.get());
                     lastSIdx = sIdx;
                     gotNewFrameThisTick = true;
+                    g_lastAcquireMs.store((int64_t)GetTickCount64());
                 }
             }
         } catch (...) { break; }
 
         if (gotNewFrameThisTick) {
             D3D11_MAPPED_SUBRESOURCE m{};
-            if (SUCCEEDED(g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m))) {
+            HRESULT mapHr = g_context->Map(g_stagingTex[lastSIdx].Get(), 0, D3D11_MAP_READ, 0, &m);
+            if (SUCCEEDED(mapHr)) {
                 WriteToShared((const uint8_t*)m.pData, m.RowPitch, fIdx++);
                 g_context->Unmap(g_stagingTex[lastSIdx].Get(), 0);
+            } else {
+                g_lastHr.store((int32_t)mapHr);
             }
         }
         std::this_thread::sleep_until(nextTime += interval);
@@ -232,13 +262,39 @@ Napi::Value StartDisplayCapture(const Napi::CallbackInfo& info) {
     ResetCaptureState();
     g_targetWidth = o.Get("targetWidth").As<Napi::Number>().Uint32Value();
     g_targetHeight = o.Get("targetHeight").As<Napi::Number>().Uint32Value();
-    ComPtr<IDXGIFactory1> f; CreateDXGIFactory1(IID_PPV_ARGS(&f));
-    ComPtr<IDXGIAdapter1> a; f->EnumAdapters1(o.Get("adapterIndex").As<Napi::Number>().Int32Value(), &a);
-    D3D11CreateDevice(a.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
-    ComPtr<IDXGIOutput> out; a->EnumOutputs(o.Get("outputIndex").As<Napi::Number>().Int32Value(), &out);
-    ComPtr<IDXGIOutput1> out1; out.As(&out1); out1->DuplicateOutput(g_device.Get(), &g_duplication);
-    DXGI_OUTPUT_DESC d{}; out->GetDesc(&d);
-    CreateStagingTextures(d.DesktopCoordinates.right - d.DesktopCoordinates.left, d.DesktopCoordinates.bottom - d.DesktopCoordinates.top);
+
+    HRESULT hr;
+
+    ComPtr<IDXGIFactory1> f;
+    hr = CreateDXGIFactory1(IID_PPV_ARGS(&f));
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    ComPtr<IDXGIAdapter1> a;
+    hr = f->EnumAdapters1(o.Get("adapterIndex").As<Napi::Number>().Int32Value(), &a);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    hr = D3D11CreateDevice(a.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    ComPtr<IDXGIOutput> out;
+    hr = a->EnumOutputs(o.Get("outputIndex").As<Napi::Number>().Int32Value(), &out);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    ComPtr<IDXGIOutput1> out1;
+    hr = out.As(&out1);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    hr = out1->DuplicateOutput(g_device.Get(), &g_duplication);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    DXGI_OUTPUT_DESC d{};
+    hr = out->GetDesc(&d);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    if (!CreateStagingTextures(d.DesktopCoordinates.right - d.DesktopCoordinates.left, d.DesktopCoordinates.bottom - d.DesktopCoordinates.top))
+        return Napi::Boolean::New(info.Env(), false);
+
+    g_mode.store(1);
     g_running = true;
     g_captureThread = std::thread(CaptureLoopDXGI, o.Get("fps").As<Napi::Number>().Int32Value());
     return Napi::Boolean::New(info.Env(), true);
@@ -249,22 +305,43 @@ Napi::Value StartWindowCapture(const Napi::CallbackInfo& info) {
     ResetCaptureState();
     g_targetWidth = o.Get("targetWidth").As<Napi::Number>().Uint32Value();
     g_targetHeight = o.Get("targetHeight").As<Napi::Number>().Uint32Value();
-    D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
-    ComPtr<IDXGIDevice> dxgi; g_device.As(&dxgi);
+
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &g_device, nullptr, &g_context);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
+    ComPtr<IDXGIDevice> dxgi;
+    hr = g_device.As(&dxgi);
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    winrt::com_ptr<::IInspectable> insp; CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(), insp.put());
+
+    winrt::com_ptr<::IInspectable> insp;
+    hr = CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(), insp.put());
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
     g_winrtDevice = insp.as<wgd11::IDirect3DDevice>();
+
+    HWND hwnd = (HWND)(uintptr_t)o.Get("hwnd").As<Napi::Number>().Int64Value();
+    g_targetHwnd.store((uint32_t)(uintptr_t)hwnd);
+
     auto factory = winrt::get_activation_factory<wgc::GraphicsCaptureItem>();
     winrt::com_ptr<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem> abiItem;
-    factory.as<IGraphicsCaptureItemInterop>()->CreateForWindow((HWND)(uintptr_t)o.Get("hwnd").As<Napi::Number>().Int64Value(), winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(), abiItem.put_void());
+    hr = factory.as<IGraphicsCaptureItemInterop>()->CreateForWindow(hwnd, winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(), abiItem.put_void());
+    if (FAILED(hr)) { g_lastHr.store((int32_t)hr); return Napi::Boolean::New(info.Env(), false); }
+
     auto item = abiItem.as<wgc::GraphicsCaptureItem>();
     auto size = item.Size();
-    CreateStagingTextures(size.Width, size.Height);
+
+    if (!CreateStagingTextures(size.Width, size.Height))
+        return Napi::Boolean::New(info.Env(), false);
+
     g_wgcFramePool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(g_winrtDevice, winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized, 3, size);
     g_wgcSession = g_wgcFramePool.CreateCaptureSession(item);
     try { g_wgcSession.IsCursorCaptureEnabled(true); } catch(...) {}
     try { g_wgcSession.IsBorderRequired(false); } catch(...) {}
     g_wgcSession.StartCapture();
+
+    g_mode.store(2);
     g_running = true;
     g_captureThread = std::thread(CaptureLoopWGC, o.Get("fps").As<Napi::Number>().Int32Value());
     return Napi::Boolean::New(info.Env(), true);
@@ -286,7 +363,20 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     }));
     exports.Set("getInfo", Napi::Function::New(env, [](const Napi::CallbackInfo& info){
         Napi::Object res = Napi::Object::New(info.Env());
-        res.Set("running", g_running.load()); res.Set("width", (uint32_t)g_targetWidth.load()); res.Set("height", (uint32_t)g_targetHeight.load());
+        const int mode = g_mode.load();
+
+        res.Set("running", g_running.load());
+        res.Set("width", (uint32_t)g_targetWidth.load());
+        res.Set("height", (uint32_t)g_targetHeight.load());
+        res.Set("outputWidth", g_stagingWidth);
+        res.Set("outputHeight", g_stagingHeight);
+        res.Set("mode", mode == 1 ? "dxgi" : mode == 2 ? "wgc" : "none");
+        res.Set("bufferSize", (double)g_sharedSize);
+        res.Set("slotBytes", (double)(g_sharedSize > 48 ? (g_sharedSize - 48) / 2 : 0));
+        res.Set("lastHr", (double)g_lastHr.load());
+        res.Set("lastAcquireMs", (double)g_lastAcquireMs.load());
+        res.Set("lastMapMs", (double)g_lastMapMs.load());
+        res.Set("targetHwnd", g_targetHwnd.load());
         return res;
     }));
     exports.Set("getCapabilities", Napi::Function::New(env, [](const Napi::CallbackInfo& info){

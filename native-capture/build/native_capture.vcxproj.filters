@@ -2,39 +2,39 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="..">
-      <UniqueIdentifier>{13ED4249-1F9C-5F0F-2651-29A73F3A7059}</UniqueIdentifier>
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
     </Filter>
     <Filter Include="..\src">
-      <UniqueIdentifier>{F1003AD6-4B6D-45DF-3F56-5CAC869BF55E}</UniqueIdentifier>
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
     </Filter>
     <Filter Include="E:">
-      <UniqueIdentifier>{97E1A3A8-7FAC-1DB5-E5B7-486D2EFD27A1}</UniqueIdentifier>
+      <UniqueIdentifier>{5B7DBE12-B2C6-AFA4-ACF8-17495B3FA076}</UniqueIdentifier>
     </Filter>
     <Filter Include="E:\FoxVox-Electron">
-      <UniqueIdentifier>{9887F868-2E9F-A8AE-0ABF-260F5F2C364D}</UniqueIdentifier>
+      <UniqueIdentifier>{AD6936BF-EDF1-1A50-DF43-4B4A962B22DD}</UniqueIdentifier>
     </Filter>
-    <Filter Include="E:\FoxVox-Electron\native-capture">
-      <UniqueIdentifier>{3038C672-66FC-93A1-60FC-104D099CB21A}</UniqueIdentifier>
+    <Filter Include="E:\FoxVox-Electron\node_modules">
+      <UniqueIdentifier>{56DF7A98-063D-FB9D-485C-089023B4C16A}</UniqueIdentifier>
     </Filter>
-    <Filter Include="E:\FoxVox-Electron\native-capture\node_modules">
-      <UniqueIdentifier>{126A39EA-1D28-5689-C126-0DA0AB5837A0}</UniqueIdentifier>
+    <Filter Include="E:\FoxVox-Electron\node_modules\@electron">
+      <UniqueIdentifier>{6FD122B1-87CE-5BE7-127F-692B6E499EA3}</UniqueIdentifier>
     </Filter>
-    <Filter Include="E:\FoxVox-Electron\native-capture\node_modules\node-gyp">
-      <UniqueIdentifier>{49558BB4-6D34-CA91-A65D-85A65792DC11}</UniqueIdentifier>
+    <Filter Include="E:\FoxVox-Electron\node_modules\@electron\node-gyp">
+      <UniqueIdentifier>{77348C0E-2034-7791-74D5-63C077DF5A3B}</UniqueIdentifier>
     </Filter>
-    <Filter Include="E:\FoxVox-Electron\native-capture\node_modules\node-gyp\src">
-      <UniqueIdentifier>{F1003AD6-4B6D-45DF-3F56-5CAC869BF55E}</UniqueIdentifier>
+    <Filter Include="E:\FoxVox-Electron\node_modules\@electron\node-gyp\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
     </Filter>
     <Filter Include="..">
-      <UniqueIdentifier>{13ED4249-1F9C-5F0F-2651-29A73F3A7059}</UniqueIdentifier>
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\capture.cpp">
       <Filter>..\src</Filter>
     </ClCompile>
-    <ClCompile Include="E:\FoxVox-Electron\native-capture\node_modules\node-gyp\src\win_delay_load_hook.cc">
-      <Filter>E:\FoxVox-Electron\native-capture\node_modules\node-gyp\src</Filter>
+    <ClCompile Include="E:\FoxVox-Electron\node_modules\@electron\node-gyp\src\win_delay_load_hook.cc">
+      <Filter>E:\FoxVox-Electron\node_modules\@electron\node-gyp\src</Filter>
     </ClCompile>
     <None Include="..\binding.gyp">
       <Filter>..</Filter>

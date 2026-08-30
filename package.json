@@ -1,6 +1,6 @@
 {
   "name": "foxvox",
-  "version": "1.0.66",
+  "version": "1.0.67",
   "description": "FoxVox Chat Application",
   "homepage": "https://github.com/sciaschi/FoxVox-Electron#readme",
   "bugs": {
@@ -15,7 +15,7 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "dev": "electron .",
+    "dev": "npm run rebuild && electron .",
     "package": "electron-forge package",
     "publish": "electron-forge publish",
     "rebuild": "electron-rebuild -m ./native-capture",

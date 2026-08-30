@@ -1,6 +1,7 @@
 const path = require("path");
-const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, session, screen, autoUpdater } = require("electron");
+const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, session, screen, protocol } = require("electron");
 const { updateElectronApp } = require("update-electron-app");
+const fs = require("fs");
 
 let mainWindow = null;
 
@@ -51,10 +52,11 @@ function createWindow() {
             contextIsolation: false,
             nodeIntegration: false,
             sandbox: false,
+            webSecurity: true,
         },
     });
 
-    mainWindow.loadFile(path.join(__dirname, "dist/index.html"));
+    mainWindow.loadURL("app://./index.html");
 
     mainWindow.on("close", (e) => {
         if (!mainWindow.isClearedForClose) {
@@ -68,43 +70,107 @@ function createWindow() {
     });
 }
 
-app.whenReady().then(() => {
+// MUST be registered before app.whenReady
+protocol.registerSchemesAsPrivileged([
+    {
+        scheme: "app",
+        privileges: {
+            standard: true,
+            secure: true,
+            supportFetchAPI: true,
+            corsEnabled: true,
+            stream: true,
+            allowServiceWorkers: true,
+        },
+    },
+]);
 
+app.whenReady().then(() => {
     updateElectronApp();
 
-    createWindow();
-
+    // Force isolation headers on every response
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-        callback({
-            responseHeaders: {
-                ...details.responseHeaders,
-                "Cross-Origin-Opener-Policy":   ["same-origin"],
-                "Cross-Origin-Embedder-Policy": ["credentialless"],
-                "Access-Control-Allow-Origin":  ["*"],
-                "Access-Control-Allow-Methods": ["GET, POST, PUT, DELETE, OPTIONS"],
-                "Access-Control-Allow-Headers": ["Content-Type, Authorization"],
-                "Content-Security-Policy": [`
-                default-src   'self';
-                script-src    'self';
-                style-src     'self' 'unsafe-inline' https://fonts.googleapis.com;
-                font-src      'self' https://fonts.gstatic.com;
-                img-src       'self' file: data: blob: https:;
-                media-src     'self' file: blob:;
-                frame-src     https://www.youtube.com https://youtube.com
-                              https://giphy.com https://tenor.com
-                              https://twitter.com https://platform.twitter.com;
-                connect-src   'self'
-                              https://api.foxvox.app
-                              wss://gw.foxvox.app
-                              https://*.amazonaws.com;
-                worker-src    'self' blob:;
-                object-src    'none';
-                base-uri      'self';
-                form-action   'self';
-            `],
-            },
-        });
+        const responseHeaders = { ...details.responseHeaders };
+
+        responseHeaders["Cross-Origin-Opener-Policy"] = ["same-origin"];
+        responseHeaders["Cross-Origin-Embedder-Policy"] = ["credentialless"];
+        responseHeaders["Cross-Origin-Resource-Policy"] = ["cross-origin"];
+        responseHeaders["Origin-Agent-Cluster"] = ["?1"];
+
+        // Strict CSP – no external fonts / styles that block isolation
+        responseHeaders["Content-Security-Policy"] = [`
+            default-src   'self';
+            script-src    'self';
+            style-src     'self' 'unsafe-inline';
+            font-src      'self';
+            img-src       'self' file: data: blob: https:;
+            media-src     'self' file: blob:;
+            frame-src     'none';
+            connect-src   'self'
+                          https://api.foxvox.app
+                          wss://gw.foxvox.app
+                          https://*.amazonaws.com;
+            worker-src    'self' blob:;
+            object-src    'none';
+            base-uri      'self';
+            form-action   'self';
+        `];
+
+        callback({ responseHeaders });
     });
+
+    // Custom protocol – also force the headers on the main document + assets
+    protocol.handle("app", (request) => {
+        const url = new URL(request.url);
+
+        let filePath = path.join(__dirname, "dist", url.pathname);
+
+        if (url.pathname === "/" || url.pathname === "" || !path.extname(filePath)) {
+            filePath = path.join(__dirname, "dist", "index.html");
+        }
+
+        try {
+            if (!fs.existsSync(filePath)) {
+                return new Response("Not Found", { status: 404 });
+            }
+
+            const fileData = fs.readFileSync(filePath);
+            const ext = path.extname(filePath).toLowerCase();
+
+            const mimeTypes = {
+                ".html": "text/html",
+                ".js": "application/javascript",
+                ".css": "text/css",
+                ".json": "application/json",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".svg": "image/svg+xml",
+                ".wasm": "application/wasm",
+                ".ico": "image/x-icon",
+                ".woff": "font/woff",
+                ".woff2": "font/woff2",
+            };
+
+            const contentType = mimeTypes[ext] || "application/octet-stream";
+
+            return new Response(fileData, {
+                status: 200,
+                headers: {
+                    "Content-Type": contentType,
+                    "Cross-Origin-Opener-Policy": "same-origin",
+                    "Cross-Origin-Embedder-Policy": "credentialless",
+                    "Cross-Origin-Resource-Policy": "cross-origin",
+                    "Origin-Agent-Cluster": "?1",
+                },
+            });
+        } catch (error) {
+            console.error("Failed to serve file via custom protocol:", error);
+            return new Response("Internal Server Error", { status: 500 });
+        }
+    });
+
+    createWindow();
 
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
         const allowed = ["media", "mediaKeySystem", "fullscreen", "openExternal"];
@@ -116,7 +182,7 @@ app.whenReady().then(() => {
         const includeWindows = opts.includeWindows !== false;
 
         const displays = screen.getAllDisplays();
-        console.log("[Displays raw]", displays.map(d => ({
+        console.log("[Displays raw]", displays.map((d) => ({
             id: d.id,
             bounds: d.bounds,
             scaleFactor: d.scaleFactor,
@@ -161,7 +227,6 @@ app.whenReady().then(() => {
             if (parsed.kind === "window") {
                 nativeWidth = null;
                 nativeHeight = null;
-
                 hwnd = hwnd || null;
                 windowId = windowId || null;
             }
@@ -212,7 +277,6 @@ app.whenReady().then(() => {
     ipcMain.on("clipboard-write", (_event, text) => {
         clipboard.writeText(text ?? "");
     });
-
 });
 
 app.on("window-all-closed", () => {

@@ -37,16 +37,24 @@ function registerNativeCapture(targetWindow) {
         }
 
         const size = Number(addon.requiredBufferSize(safeWidth, safeHeight));
-        sharedBuffer = new SharedArrayBuffer(size);
 
-        const view = new Uint8Array(sharedBuffer);
+        let buffer;
+        try {
+            buffer = new SharedArrayBuffer(size);
+        } catch {
+            console.warn("[NativeCapture] SharedArrayBuffer unavailable – using ArrayBuffer fallback");
+            buffer = new ArrayBuffer(size);
+        }
+
+        const view = new Uint8Array(buffer);
         addon.attachBuffer(view);
 
+        sharedBuffer = buffer;
         allocatedWidth = safeWidth;
         allocatedHeight = safeHeight;
 
         return {
-            buffer: sharedBuffer,
+            buffer,
             headerSize: Number(headerInfo?.HEADER_SIZE ?? 0),
             offsets: headerInfo ? { ...headerInfo } : null,
         };
