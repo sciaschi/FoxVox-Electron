@@ -40,6 +40,44 @@ function parseElectronSourceId(sourceId = "") {
     return { kind: "unknown" };
 }
 
+const RECAPTCHA_BRIDGE_URL = "https://foxvox.app/recaptcha-bridge.html";
+const RECAPTCHA_ACTIONS    = ["LOGIN"];
+const RECAPTCHA_TIMEOUT_MS = 15000;
+
+// app:// isn't a valid reCAPTCHA domain, so tokens come from a page hosted on foxvox.app loaded in a hidden window.
+// It uses its own session so the defaultSession CSP override (script-src 'self') doesn't block Google's script.
+async function getRecaptchaToken(action) {
+    const win = new BrowserWindow({
+        show: false,
+        webPreferences: {
+            partition: "persist:recaptcha",
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            backgroundThrottling: false,
+        },
+    });
+
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    win.webContents.on("will-navigate", (e) => e.preventDefault());
+
+    let timer;
+    try {
+        return await Promise.race([
+            (async () => {
+                await win.loadURL(RECAPTCHA_BRIDGE_URL);
+                return win.webContents.executeJavaScript(`window.getRecaptchaToken(${JSON.stringify(action)})`);
+            })(),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error("reCAPTCHA timed out")), RECAPTCHA_TIMEOUT_MS);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+        win.destroy();
+    }
+}
+
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1200,
@@ -245,6 +283,16 @@ app.whenReady().then(() => {
                 nativeHeight,
             };
         });
+    });
+
+    ipcMain.handle("recaptcha-token", async (event, action) => {
+        if (!event.senderFrame?.url?.startsWith("app://"))
+            throw new Error("Not allowed");
+
+        if (!RECAPTCHA_ACTIONS.includes(action))
+            throw new Error("Unknown reCAPTCHA action");
+
+        return getRecaptchaToken(action);
     });
 
     ipcMain.on("window-minimize", () => mainWindow?.minimize());

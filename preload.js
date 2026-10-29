@@ -22,4 +22,5 @@ window.electronAPI = {
     },
 
     getDesktopSources: (opts = {}) => ipcRenderer.invoke("get-desktop-sources", opts),
+    getRecaptchaToken: (action) => ipcRenderer.invoke("recaptcha-token", action),
 };
